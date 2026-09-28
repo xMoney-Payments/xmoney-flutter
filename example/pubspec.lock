@@ -243,30 +243,34 @@ packages:
   xmoney:
     dependency: "direct main"
     description:
-      path: "../packages/xmoney"
-      relative: true
-    source: path
+      name: xmoney
+      sha256: "12268855554a4cb4bcf7b40c6f2c10c12ba6e2239ffa3a825df26cd79f5e10b3"
+      url: "https://pub.dev"
+    source: hosted
     version: "0.0.1"
   xmoney_android:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
-      path: "../packages/xmoney_android"
-      relative: true
-    source: path
+      name: xmoney_android
+      sha256: d81b1eefa8f350e31a75a090e8025991626f6848f5a87d8de8f9b76a8502663d
+      url: "https://pub.dev"
+    source: hosted
     version: "0.0.1"
   xmoney_ios:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
-      path: "../packages/xmoney_ios"
-      relative: true
-    source: path
+      name: xmoney_ios
+      sha256: "8e332194affdcc07ebbd104de699cb5bc04c4953752bbe051e91bd5f84f97455"
+      url: "https://pub.dev"
+    source: hosted
     version: "0.0.1"
   xmoney_platform_interface:
-    dependency: "direct overridden"
+    dependency: transitive
     description:
-      path: "../packages/xmoney_platform_interface"
-      relative: true
-    source: path
+      name: xmoney_platform_interface
+      sha256: d6a2885f3215846a04135656908868c292c3687f258ed3cb55132f76670fe3d2
+      url: "https://pub.dev"
+    source: hosted
     version: "0.0.1"
 sdks:
   dart: ">=3.11.0-0 <4.0.0"
