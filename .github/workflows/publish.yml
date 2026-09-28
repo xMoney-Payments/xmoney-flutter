@@ -1,0 +1,233 @@
+# Publish the xMoney Flutter SDK to pub.dev.
+#
+# One-time, before Actions can publish (pub.dev rejects the first upload of a
+# new package, and it only accepts a later upload from a tag push):
+#   1. On a machine logged in with `dart pub login`, publish 0.0.1 in order.
+#      Wait until each version is visible on pub.dev before the next package:
+#        packages/xmoney_platform_interface
+#        packages/xmoney_android
+#        packages/xmoney_ios
+#        packages/xmoney
+#   2. On each package Admin tab, enable publishing from GitHub Actions:
+#        repository: xMoney-Payments/xmoney-flutter
+#        tag pattern: v{{version}}
+#      There is no pub.dev token secret. The tag job uses GitHub OIDC.
+#   3. Add RELEASE_GITHUB_TOKEN (a PAT or GitHub App token with contents: write).
+#      Pushing the tag with the default GITHUB_TOKEN does not start the publish job.
+#
+# Pre-release checklist (before Run workflow):
+#   1. Bump version in all four package pubspecs together, and the hosted
+#      dependency constraints. ^0.0.1 only allows 0.0.1.
+#   2. Update each package CHANGELOG.md and the repo CHANGELOG.md.
+#   3. Update the "Latest release" line in README.md.
+#   4. Confirm native SDK pins stay in android/build.gradle and xmoney_ios.podspec.
+#   5. Merge to main, then run this workflow manually.
+#
+# Run workflow reads the version from packages/xmoney/pubspec.yaml, tests, and
+# pushes tag vX.Y.Z. That tag push publishes the four packages and opens a
+# GitHub Release. dry_run stops before the tag.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run checks only; skip tag, publish, and GitHub Release'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      # Glob: one or more digits in each segment. Also allow a pre-release suffix.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read package version
+        id: package
+        run: |
+          version_of() {
+            awk '/^version:/ { print $2; exit }' "$1"
+          }
+
+          VERSION="$(version_of packages/xmoney/pubspec.yaml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "Invalid semver in packages/xmoney/pubspec.yaml: $VERSION"
+            exit 1
+          fi
+
+          for pkg in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios; do
+            OTHER="$(version_of "$pkg/pubspec.yaml")"
+            if [ "$OTHER" != "$VERSION" ]; then
+              echo "$pkg is $OTHER, expected $VERSION"
+              exit 1
+            fi
+          done
+
+      - name: Check tag does not exist
+        run: |
+          VERSION="${{ steps.package.outputs.version }}"
+          git fetch --tags --force
+          if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists"
+            exit 1
+          fi
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter --version
+      - run: dart pub get
+        working-directory: packages/xmoney_platform_interface
+      - run: dart pub get
+        working-directory: packages/xmoney
+      - run: flutter pub get
+        working-directory: packages/xmoney_android
+      - run: flutter pub get
+        working-directory: packages/xmoney_ios
+      - run: flutter analyze packages/xmoney packages/xmoney_platform_interface
+      - run: flutter test
+        working-directory: packages/xmoney
+
+      - name: Dry run publish
+        run: |
+          for dir in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios packages/xmoney; do
+            echo "---- $dir ----"
+            (cd "$dir" && dart pub publish --dry-run)
+          done
+
+      - name: Create git tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_GITHUB_TOKEN" ]; then
+            echo "RELEASE_GITHUB_TOKEN is required so this tag push starts the publish job."
+            exit 1
+          fi
+
+          VERSION="${{ steps.package.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git remote set-url origin "https://x-access-token:${RELEASE_GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+          git push origin "v$VERSION"
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Provisions the pub.dev OIDC token. Flutter's dart binary is used below;
+      # subosito/flutter-action alone cannot authenticate to pub.dev.
+      - uses: dart-lang/setup-dart@v1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Read package version
+        id: package
+        run: |
+          version_of() {
+            awk '/^version:/ { print $2; exit }' "$1"
+          }
+
+          VERSION="$(version_of packages/xmoney/pubspec.yaml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          for pkg in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios; do
+            OTHER="$(version_of "$pkg/pubspec.yaml")"
+            if [ "$OTHER" != "$VERSION" ]; then
+              echo "$pkg is $OTHER, expected $VERSION"
+              exit 1
+            fi
+          done
+
+          if [ "${GITHUB_REF_NAME}" != "v$VERSION" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match pubspec v$VERSION"
+            exit 1
+          fi
+
+          if echo "$VERSION" | grep -qE '(alpha|beta|-rc)'; then
+            echo "is-prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is-prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: flutter --version
+      - run: dart pub get
+        working-directory: packages/xmoney_platform_interface
+      - run: dart pub get
+        working-directory: packages/xmoney
+      - run: flutter pub get
+        working-directory: packages/xmoney_android
+      - run: flutter pub get
+        working-directory: packages/xmoney_ios
+      - run: flutter analyze packages/xmoney packages/xmoney_platform_interface
+      - run: flutter test
+        working-directory: packages/xmoney
+
+      - name: Publish to pub.dev
+        run: |
+          set -euo pipefail
+
+          publish_one() {
+            local dir="$1"
+            local override="$dir/pubspec_overrides.yaml"
+            local attempt
+
+            if [ -f "$override" ]; then
+              mv "$override" "$override.bak"
+            fi
+
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              if (cd "$dir" && dart pub get); then
+                (cd "$dir" && dart pub publish --force)
+                return 0
+              fi
+              echo "Waiting for pub.dev to index dependencies of $dir (attempt $attempt)..."
+              sleep 15
+            done
+
+            echo "Failed to resolve $dir"
+            return 1
+          }
+
+          publish_one packages/xmoney_platform_interface
+          publish_one packages/xmoney_android
+          publish_one packages/xmoney_ios
+          publish_one packages/xmoney
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.package.outputs.version }}"
+          NOTES="See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/v${VERSION}/CHANGELOG.md) for release notes."
+          if [ "${{ steps.package.outputs.is-prerelease }}" = "true" ]; then
+            gh release create "v$VERSION" --title "v$VERSION" --prerelease --notes "$NOTES"
+          else
+            gh release create "v$VERSION" --title "v$VERSION" --notes "$NOTES"
+          fi

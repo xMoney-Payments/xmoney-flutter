@@ -1,0 +1,3 @@
+dependency_overrides:
+  xmoney_platform_interface:
+    path: ../xmoney_platform_interface

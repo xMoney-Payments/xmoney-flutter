@@ -1,0 +1,8 @@
+name: xmoney_flutter_workspace
+publish_to: none
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dev_dependencies:
+  melos: ^8.0.0

@@ -1,0 +1,10 @@
+name: xmoney_flutter
+repository: https://github.com/xMoney-Payments/xmoney-flutter
+
+packages:
+  - packages/*
+  - example
+
+command:
+  bootstrap:
+    usePubspecOverrides: true

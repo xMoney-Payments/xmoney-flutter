@@ -1,0 +1,7 @@
+dependency_overrides:
+  xmoney_platform_interface:
+    path: ../xmoney_platform_interface
+  xmoney_android:
+    path: ../xmoney_android
+  xmoney_ios:
+    path: ../xmoney_ios

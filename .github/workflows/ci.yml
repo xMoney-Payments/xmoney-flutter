@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  analyze-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter --version
+      - run: dart pub get
+        working-directory: packages/xmoney_platform_interface
+      - run: dart pub get
+        working-directory: packages/xmoney
+      - run: flutter pub get
+        working-directory: packages/xmoney_android
+      - run: flutter pub get
+        working-directory: packages/xmoney_ios
+      - run: flutter pub get
+        working-directory: example
+      - run: flutter analyze --no-fatal-infos packages/xmoney packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios example
+      - run: flutter test
+        working-directory: packages/xmoney
+      - run: flutter build apk --debug
+        working-directory: example
+      - run: ./gradlew :xmoney_android:testDebugUnitTest
+        working-directory: example/android
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+        working-directory: example
+      - run: flutter precache --ios
+      - run: sh packages/xmoney_ios/ios/FlutterFramework/link-flutter-framework.sh
+      - run: flutter build ios --no-codesign --debug
+        working-directory: example

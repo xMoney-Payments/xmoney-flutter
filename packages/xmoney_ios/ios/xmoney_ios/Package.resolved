@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "xmoney-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/xMoney-Payments/xmoney-ios.git",
+      "state" : {
+        "revision" : "c264ec110af220c8def045f5d37e021f879e7cdc",
+        "version" : "1.0.1"
+      }
+    }
+  ],
+  "version" : 2
+}
