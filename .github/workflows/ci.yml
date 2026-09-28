@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: cp example/secrets.json.example example/secrets.json
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -37,6 +38,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - run: cp example/secrets.json.example example/secrets.json
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -44,5 +46,7 @@ jobs:
         working-directory: example
       - run: flutter precache --ios
       - run: sh packages/xmoney_ios/ios/FlutterFramework/link-flutter-framework.sh
-      - run: flutter build ios --no-codesign --debug
+      # A device build still requires a Development Team, even with
+      # --no-codesign. The simulator build compiles the plugin without one.
+      - run: flutter build ios --simulator --debug
         working-directory: example

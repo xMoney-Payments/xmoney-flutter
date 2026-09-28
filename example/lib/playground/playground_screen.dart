@@ -30,13 +30,13 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
   var _amountMinor = sampleAmountMinor;
   var _savedCards = true;
   var _submitVisible = true;
-  ValidationMode _validation = ValidationMode.onTouched;
-  CardGrouping _grouping = CardGrouping.condensed;
-  UserInterfaceStyle _style = UserInterfaceStyle.automatic;
-  String _locale = '';
+  final _validation = ValidationMode.onTouched;
+  final _grouping = CardGrouping.condensed;
+  final _style = UserInterfaceStyle.automatic;
+  final _locale = '';
   var _applePay = true;
   var _googlePay = true;
-  SubmitButtonType _submitType = SubmitButtonType.pay;
+  final _submitType = SubmitButtonType.pay;
 
   PaymentIntent? _intent;
   PaymentResult? _lastResult;
