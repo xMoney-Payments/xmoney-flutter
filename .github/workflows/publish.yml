@@ -12,8 +12,8 @@
 #        repository: xMoney-Payments/xmoney-flutter
 #        tag pattern: v{{version}}
 #        Enable publishing from workflow_dispatch events: on
-#      There is no pub.dev token secret. The job uses GitHub OIDC, and pub.dev
-#      only accepts it when the run was started from a matching tag.
+#      There is no pub.dev token secret. Publishing uses GitHub OIDC, which
+#      pub.dev only accepts from a run started on a matching tag.
 #
 # Pre-release checklist:
 #   1. Bump version in all four package pubspecs together, and the hosted
@@ -21,14 +21,12 @@
 #   2. Update each package CHANGELOG.md and the repo CHANGELOG.md.
 #   3. Update the "Latest release" line in README.md.
 #   4. Confirm native SDK pins stay in android/build.gradle and xmoney_ios.podspec.
-#   5. Merge to main, then tag the release commit and push the tag:
-#        git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z
-#   6. Actions > Publish > Run workflow. Under "Use workflow from" pick the tag
-#      vX.Y.Z, and enter X.Y.Z as the version.
+#   5. Actions > Publish > Run workflow from the release branch, enter X.Y.Z.
 #
-# The run checks the tag and all four pubspecs match the version, tests,
-# publishes the four packages in order, and opens a GitHub Release.
-# dry_run stops after `dart pub publish --dry-run` and can run from any ref.
+# Run from a branch: checks the four pubspecs match the version, tests,
+# dry-runs, then tags the branch head vX.Y.Z and starts this workflow on that
+# tag. The tag run publishes the four packages in order and opens a GitHub
+# Release. dry_run stops before the tag.
 
 name: Publish
 
@@ -36,21 +34,102 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish, e.g. 0.0.2 (run from tag vX.Y.Z)'
+        description: 'Version to release, e.g. 0.0.2'
         required: true
         type: string
       dry_run:
-        description: 'Run checks only; skip publish and GitHub Release'
+        description: 'Run checks only; skip tag, publish, and GitHub Release'
         required: false
         type: boolean
         default: false
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version
+        id: package
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "Invalid semver: $VERSION"
+            exit 1
+          fi
+
+          version_of() {
+            awk '/^version:/ { print $2; exit }' "$1"
+          }
+
+          for pkg in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios packages/xmoney; do
+            OTHER="$(version_of "$pkg/pubspec.yaml")"
+            if [ "$OTHER" != "$VERSION" ]; then
+              echo "$pkg is $OTHER, expected $VERSION"
+              exit 1
+            fi
+          done
+
+          git fetch --tags --force
+          if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists"
+            exit 1
+          fi
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter --version
+      - run: dart pub get
+        working-directory: packages/xmoney_platform_interface
+      - run: dart pub get
+        working-directory: packages/xmoney
+      - run: flutter pub get
+        working-directory: packages/xmoney_android
+      - run: flutter pub get
+        working-directory: packages/xmoney_ios
+      - run: flutter analyze packages/xmoney packages/xmoney_platform_interface
+      - run: flutter test
+        working-directory: packages/xmoney
+
+      - name: Dry run publish
+        run: |
+          for dir in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios packages/xmoney; do
+            echo "---- $dir ----"
+            (cd "$dir" && dart pub publish --dry-run)
+          done
+
+      - name: Create tag and start publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.package.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+          # GITHUB_TOKEN tag pushes start no workflows, but workflow_dispatch does.
+          gh workflow run publish.yml --ref "v$VERSION" -f version="$VERSION"
+          echo "Started Publish on v$VERSION: https://github.com/${{ github.repository }}/actions/workflows/publish.yml"
+
   publish:
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -62,18 +141,12 @@ jobs:
         id: package
         env:
           VERSION: ${{ inputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           VERSION="${VERSION#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "Invalid semver: $VERSION"
-            exit 1
-          fi
-
-          if [ "$DRY_RUN" != "true" ] && [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
-            echo "Run this workflow from tag v$VERSION (\"Use workflow from\"), not $GITHUB_REF."
+          if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
+            echo "Tag $GITHUB_REF does not match version v$VERSION"
             exit 1
           fi
 
@@ -103,24 +176,6 @@ jobs:
           channel: stable
 
       - run: flutter --version
-      - run: dart pub get
-        working-directory: packages/xmoney_platform_interface
-      - run: dart pub get
-        working-directory: packages/xmoney
-      - run: flutter pub get
-        working-directory: packages/xmoney_android
-      - run: flutter pub get
-        working-directory: packages/xmoney_ios
-      - run: flutter analyze packages/xmoney packages/xmoney_platform_interface
-      - run: flutter test
-        working-directory: packages/xmoney
-
-      - name: Dry run publish
-        run: |
-          for dir in packages/xmoney_platform_interface packages/xmoney_android packages/xmoney_ios packages/xmoney; do
-            echo "---- $dir ----"
-            (cd "$dir" && dart pub publish --dry-run)
-          done
 
       - name: Publish to pub.dev
         if: ${{ !inputs.dry_run }}
