@@ -3,7 +3,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'xmoney_ios'
-  s.version          = '0.0.1'
+  s.version          = '0.0.2'
   s.summary          = 'iOS implementation of the xMoney Flutter SDK.'
   s.homepage         = 'https://xmoney.com'
   s.license          = { :file => '../LICENSE' }

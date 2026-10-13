@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
@@ -81,6 +82,7 @@ internal class GooglePayButtonPlatformView(
         composeView.setContent {
             val current = prepared ?: return@setContent
             androidx.compose.runtime.CompositionLocalProvider(
+                LocalContext provides hostActivity,
                 LocalActivityResultRegistryOwner provides hostActivity,
             ) {
                 val controller = rememberGooglePay(current.first) { result ->
@@ -89,8 +91,6 @@ internal class GooglePayButtonPlatformView(
                 }
                 LaunchedEffect(controller) {
                     controllerRef = controller
-                    emitEvent(mapOf("type" to "onReady"))
-                    emitAvailability()
                 }
                 GooglePayButton(
                     controller = controller,
@@ -98,15 +98,20 @@ internal class GooglePayButtonPlatformView(
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     onEvent = { event ->
                         when (event) {
-                            GooglePayEvent.Ready -> emitEvent(mapOf("type" to "onReady"))
-                            is GooglePayEvent.Processing -> emitEvent(
-                                mapOf(
-                                    "type" to "onProcessing",
-                                    "isProcessing" to event.isProcessing,
-                                ),
-                            )
+                            GooglePayEvent.Ready -> {
+                                emitAvailability()
+                                emitEvent(mapOf("type" to "onReady"))
+                            }
+                            is GooglePayEvent.Processing -> {
+                                emitEvent(
+                                    mapOf(
+                                        "type" to "onProcessing",
+                                        "isProcessing" to event.isProcessing,
+                                    ),
+                                )
+                                emitAvailability()
+                            }
                         }
-                        emitAvailability()
                     },
                 )
             }

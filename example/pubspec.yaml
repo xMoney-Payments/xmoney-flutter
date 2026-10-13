@@ -12,7 +12,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.2
-  xmoney: ^0.0.1
+  xmoney: ^0.0.2
 
 dev_dependencies:
   flutter_test:
