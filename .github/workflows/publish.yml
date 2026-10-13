@@ -26,7 +26,8 @@
 # Run from a branch: checks the four pubspecs match the version, tests,
 # dry-runs, then tags the branch head vX.Y.Z and starts this workflow on that
 # tag. The tag run publishes the four packages in order and opens a GitHub
-# Release. dry_run stops before the tag.
+# Release. dry_run stops before the tag. A leftover vX.Y.Z tag is moved to the
+# branch head if X.Y.Z is not on pub.dev yet; if it is, the run fails.
 
 name: Publish
 
@@ -84,10 +85,17 @@ jobs:
             fi
           done
 
+          for pkg in xmoney_platform_interface xmoney_android xmoney_ios xmoney; do
+            STATUS="$(curl -s -o /dev/null -w '%{http_code}' "https://pub.dev/api/packages/$pkg/versions/$VERSION")"
+            if [ "$STATUS" = "200" ]; then
+              echo "$pkg $VERSION is already on pub.dev. Bump the version."
+              exit 1
+            fi
+          done
+
           git fetch --tags --force
           if git rev-parse "refs/tags/v$VERSION" >/dev/null 2>&1; then
-            echo "Tag v$VERSION already exists"
-            exit 1
+            echo "Tag v$VERSION exists but $VERSION is not on pub.dev. It will be moved to $(git rev-parse --short HEAD)."
           fi
 
       - uses: subosito/flutter-action@v2
@@ -122,8 +130,8 @@ jobs:
           VERSION="${{ steps.package.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
+          git tag -f -a "v$VERSION" -m "Release v$VERSION"
+          git push -f origin "refs/tags/v$VERSION"
           # GITHUB_TOKEN tag pushes start no workflows, but workflow_dispatch does.
           gh workflow run publish.yml --ref "v$VERSION" -f version="$VERSION"
           echo "Started Publish on v$VERSION: https://github.com/${{ github.repository }}/actions/workflows/publish.yml"
