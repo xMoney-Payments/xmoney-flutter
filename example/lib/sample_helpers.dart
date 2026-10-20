@@ -5,6 +5,12 @@ import 'theme/example_colors.dart';
 
 const sampleAmountMinor = 1999;
 
+/// A newer `updateOrder` replaced this one. The newer call owns the result.
+bool isSupersededUpdate(Object error) {
+  return error is XMoneyPaymentError &&
+      error.code == 'SUPERSEDED_UPDATE_ORDER';
+}
+
 UserInterfaceStyle exampleForcedStyle(bool dark) {
   return dark ? UserInterfaceStyle.alwaysDark : UserInterfaceStyle.alwaysLight;
 }

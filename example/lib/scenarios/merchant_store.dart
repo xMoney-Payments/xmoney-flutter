@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:xmoney/xmoney.dart';
 
@@ -80,20 +78,20 @@ class _MerchantStoreInnerState extends State<_MerchantStoreInner> {
       body: SafeArea(
         child: switch (_route) {
           _StoreRoute.catalog => _CatalogView(
-              brand: widget.brand,
-              lines: _lines,
-              quantityOf: (id) => _quantities[id] ?? 0,
-              onBack: widget.onLeave,
-              onAdd: (id) => _setQty(id, (_quantities[id] ?? 0) + 1),
-              onOpenCart: () => setState(() => _route = _StoreRoute.cart),
-            ),
+            brand: widget.brand,
+            lines: _lines,
+            quantityOf: (id) => _quantities[id] ?? 0,
+            onBack: widget.onLeave,
+            onAdd: (id) => _setQty(id, (_quantities[id] ?? 0) + 1),
+            onOpenCart: () => setState(() => _route = _StoreRoute.cart),
+          ),
           _StoreRoute.cart => _CartView(
-              brand: widget.brand,
-              lines: _lines,
-              onBack: () => setState(() => _route = _StoreRoute.catalog),
-              onQty: _setQty,
-              onCheckout: () => setState(() => _route = _StoreRoute.checkout),
-            ),
+            brand: widget.brand,
+            lines: _lines,
+            onBack: () => setState(() => _route = _StoreRoute.catalog),
+            onQty: _setQty,
+            onCheckout: () => setState(() => _route = _StoreRoute.checkout),
+          ),
           _StoreRoute.checkout =>
             widget.brand.paySurface == MerchantPaySurface.sheet
                 ? _SheetCheckout(
@@ -118,23 +116,23 @@ class _MerchantStoreInnerState extends State<_MerchantStoreInner> {
                     }),
                   ),
           _StoreRoute.receipt => _ReceiptView(
-              brand: widget.brand,
-              lines: _lines,
-              result: _receiptResult!,
-              onDone: () => setState(() {
-                _quantities.clear();
-                _receiptResult = null;
-                _route = _StoreRoute.catalog;
-              }),
-              onRetry: () => setState(() {
-                _receiptResult = null;
-                _route = _StoreRoute.checkout;
-              }),
-              onBackToCart: () => setState(() {
-                _receiptResult = null;
-                _route = _StoreRoute.cart;
-              }),
-            ),
+            brand: widget.brand,
+            lines: _lines,
+            result: _receiptResult!,
+            onDone: () => setState(() {
+              _quantities.clear();
+              _receiptResult = null;
+              _route = _StoreRoute.catalog;
+            }),
+            onRetry: () => setState(() {
+              _receiptResult = null;
+              _route = _StoreRoute.checkout;
+            }),
+            onBackToCart: () => setState(() {
+              _receiptResult = null;
+              _route = _StoreRoute.cart;
+            }),
+          ),
         },
       ),
     );
@@ -254,10 +252,7 @@ class _ProductCard extends StatelessWidget {
       height: compact ? 120 : 72,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(ExampleRadii.inner),
-        child: Image.asset(
-          product.imageAsset,
-          fit: BoxFit.cover,
-        ),
+        child: Image.asset(product.imageAsset, fit: BoxFit.cover),
       ),
     );
     final details = Column(
@@ -308,11 +303,7 @@ class _ProductCard extends StatelessWidget {
       child: compact
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                photo,
-                const SizedBox(height: 10),
-                details,
-              ],
+              children: [photo, const SizedBox(height: 10), details],
             )
           : Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -476,11 +467,17 @@ class _CartLine extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(line.product.name,
-                  style: TextStyle(
-                      color: colors.text, fontWeight: FontWeight.w600)),
-              Text(formatMoney(line.product.priceMinor),
-                  style: TextStyle(color: colors.muted)),
+              Text(
+                line.product.name,
+                style: TextStyle(
+                  color: colors.text,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                formatMoney(line.product.priceMinor),
+                style: TextStyle(color: colors.muted),
+              ),
               const SizedBox(height: 6),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -491,9 +488,13 @@ class _CartLine extends StatelessWidget {
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Text('${line.quantity}',
-                        style: TextStyle(
-                            color: colors.text, fontWeight: FontWeight.w600)),
+                    child: Text(
+                      '${line.quantity}',
+                      style: TextStyle(
+                        color: colors.text,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                   _QtyButton(
                     icon: Icons.add,
@@ -504,8 +505,10 @@ class _CartLine extends StatelessWidget {
             ],
           ),
         ),
-        Text(formatMoney(lineTotal(line)),
-            style: TextStyle(color: colors.text, fontWeight: FontWeight.w700)),
+        Text(
+          formatMoney(lineTotal(line)),
+          style: TextStyle(color: colors.text, fontWeight: FontWeight.w700),
+        ),
       ],
     );
   }
@@ -550,12 +553,14 @@ class _Totals extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Total',
-                style:
-                    TextStyle(color: colors.text, fontWeight: FontWeight.w700)),
-            Text(total,
-                style:
-                    TextStyle(color: colors.text, fontWeight: FontWeight.w700)),
+            Text(
+              'Total',
+              style: TextStyle(color: colors.text, fontWeight: FontWeight.w700),
+            ),
+            Text(
+              total,
+              style: TextStyle(color: colors.text, fontWeight: FontWeight.w700),
+            ),
           ],
         ),
       ],
@@ -609,11 +614,11 @@ class _SheetCheckoutState extends State<_SheetCheckout> {
       return;
     }
     try {
-      final intent =
-          await DemoCheckoutBackend(widget.secrets).createPaymentIntent(
-        amountMinor: subtotalMinor(widget.lines),
-        description: _description,
-      );
+      final intent = await DemoCheckoutBackend(widget.secrets)
+          .createPaymentIntent(
+            amountMinor: subtotalMinor(widget.lines),
+            description: _description,
+          );
       if (!mounted) return;
       setState(() {
         _heldIntent = intent;
@@ -635,18 +640,17 @@ class _SheetCheckoutState extends State<_SheetCheckout> {
     });
     final dark = context.exampleDark;
     try {
-      await _sheet.init(defaultPaymentConfig(
-        widget.secrets,
-        dark: dark,
-        appearance: widget.brand.appearance,
-      ));
+      await _sheet.init(
+        defaultPaymentConfig(
+          widget.secrets,
+          dark: dark,
+          appearance: widget.brand.appearance,
+        ),
+      );
       final result = await _sheet.present(intent);
       if (!mounted) return;
       setState(() => _loading = false);
-      final consumed = orderConsumed(
-        result,
-        result is! PaymentResultCanceled,
-      );
+      final consumed = orderConsumed(result, result is! PaymentResultCanceled);
       if (consumed) {
         _heldIntent = null;
         widget.onFinished(result);
@@ -698,7 +702,9 @@ class _SheetCheckoutState extends State<_SheetCheckout> {
               if (_revealed) ...[
                 if (_error != null) ...[
                   ExampleStatusChip(
-                      text: _error!, kind: ExampleStatusKind.error),
+                    text: _error!,
+                    kind: ExampleStatusKind.error,
+                  ),
                   const SizedBox(height: 12),
                 ],
                 ExampleButton(
@@ -756,7 +762,7 @@ class _EmbeddedCheckoutState extends State<_EmbeddedCheckout> {
   PaymentIntent? _intent;
   String? _error;
   var _ready = false;
-  Timer? _debounce;
+  var _orderRequest = 0;
 
   int get _total => subtotalMinor(widget.lines);
 
@@ -780,32 +786,63 @@ class _EmbeddedCheckoutState extends State<_EmbeddedCheckout> {
   }
 
   void _scheduleOrder({required bool initial}) {
-    _debounce?.cancel();
-    _debounce = Timer(Duration(milliseconds: initial ? 0 : 300), () async {
-      final backend = DemoCheckoutBackend(widget.secrets);
-      try {
-        final next = await backend.createPaymentIntent(
-          amountMinor: _total,
-          description: _description,
-        );
-        if (!mounted) return;
-        if (_intent != null) {
-          await _controller.updateOrder(next);
+    final request = ++_orderRequest;
+    final amount = _total;
+    final description = _description;
+    if (_intent != null) {
+      _replaceOrder(request, amount, description, debounce: !initial);
+    } else {
+      _loadOrder(request, amount, description);
+    }
+  }
+
+  Future<void> _loadOrder(int request, int amount, String description) async {
+    try {
+      final next = await DemoCheckoutBackend(
+        widget.secrets,
+      ).createPaymentIntent(amountMinor: amount, description: description);
+      if (!mounted || request != _orderRequest) return;
+      setState(() {
+        _error = null;
+        _intent = next;
+      });
+    } catch (e) {
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _error = e.toString());
+    }
+  }
+
+  /// Locks Pay immediately, then binds the order created after the debounce.
+  Future<void> _replaceOrder(
+    int request,
+    int amount,
+    String description, {
+    required bool debounce,
+  }) async {
+    try {
+      final next = await _controller.updateOrderWith(() async {
+        if (debounce) {
+          await Future<void>.delayed(const Duration(milliseconds: 300));
         }
-        setState(() {
-          _error = null;
-          _intent = next;
-        });
-      } catch (e) {
-        if (!mounted) return;
-        setState(() => _error = e.toString());
-      }
-    });
+        if (!_controller.isUpdateCurrent) throw StateError('superseded');
+        return DemoCheckoutBackend(
+          widget.secrets,
+        ).createPaymentIntent(amountMinor: amount, description: description);
+      });
+      if (!mounted || request != _orderRequest) return;
+      setState(() {
+        _error = null;
+        _intent = next;
+      });
+    } catch (e) {
+      if (!mounted || request != _orderRequest || isSupersededUpdate(e)) return;
+      setState(() => _error = e.toString());
+    }
   }
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    _orderRequest++;
     super.dispose();
   }
 
@@ -833,10 +870,7 @@ class _EmbeddedCheckoutState extends State<_EmbeddedCheckout> {
                       for (final line in widget.lines)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
-                          child: _CartLine(
-                            line: line,
-                            onQty: widget.onQty,
-                          ),
+                          child: _CartLine(line: line, onQty: widget.onQty),
                         ),
                       _Totals(lines: widget.lines),
                     ],

@@ -214,7 +214,7 @@ packages:
       path: "../xmoney_platform_interface"
       relative: true
     source: path
-    version: "0.0.2"
+    version: "0.0.3"
 sdks:
   dart: ">=3.11.0-0 <4.0.0"
   flutter: ">=3.44.0"

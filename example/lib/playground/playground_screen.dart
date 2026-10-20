@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -44,9 +43,10 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
   var _loading = true;
   var _ready = false;
   var _consumed = false;
-  Timer? _debounce;
+  var _orderRequest = 0;
 
   final _elementController = PaymentElementController();
+  final _walletController = WalletPayButtonController();
   final _sheet = PaymentSheetController();
 
   @override
@@ -57,7 +57,7 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    _orderRequest++;
     super.dispose();
   }
 
@@ -95,25 +95,79 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
 
   void _scheduleOrder({required bool initial}) {
     if (_consumed) return;
-    _debounce?.cancel();
-    _debounce = Timer(Duration(milliseconds: initial ? 0 : 300), () async {
-      if (initial) setState(() => _loading = true);
+    final request = ++_orderRequest;
+    final amount = _amountMinor;
+    if (initial) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    } else {
       setState(() => _error = null);
-      try {
-        final next = await DemoCheckoutBackend(widget.secrets)
-            .createPaymentIntent(amountMinor: _amountMinor);
-        if (!mounted) return;
-        if (_intent != null && _mode == _PlaygroundMode.embedded) {
-          await _elementController.updateOrder(next);
-        }
-        setState(() => _intent = next);
-      } catch (e) {
-        if (!mounted) return;
-        setState(() => _error = e.toString());
-      } finally {
-        if (initial && mounted) setState(() => _loading = false);
+    }
+    if (_intent != null && _mode != _PlaygroundMode.sheet) {
+      _replaceOrder(request, amount, debounce: !initial, initial: initial);
+    } else {
+      _loadOrder(request, amount, initial: initial);
+    }
+  }
+
+  Future<void> _loadOrder(
+    int request,
+    int amount, {
+    required bool initial,
+  }) async {
+    try {
+      final next = await DemoCheckoutBackend(
+        widget.secrets,
+      ).createPaymentIntent(amountMinor: amount);
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _intent = next);
+    } catch (e) {
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (initial && mounted && request == _orderRequest) {
+        setState(() => _loading = false);
       }
-    });
+    }
+  }
+
+  /// Locks Pay immediately, then binds the order created after the debounce.
+  Future<void> _replaceOrder(
+    int request,
+    int amount, {
+    required bool debounce,
+    required bool initial,
+  }) async {
+    final wallet = _mode == _PlaygroundMode.wallet;
+    try {
+      Future<PaymentIntent> create() async {
+        if (debounce) {
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+        }
+        final current = wallet
+            ? _walletController.isUpdateCurrent
+            : _elementController.isUpdateCurrent;
+        if (!current) throw StateError('superseded');
+        return DemoCheckoutBackend(
+          widget.secrets,
+        ).createPaymentIntent(amountMinor: amount);
+      }
+
+      final next = wallet
+          ? await _walletController.updateOrderWith(create)
+          : await _elementController.updateOrderWith(create);
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _intent = next);
+    } catch (e) {
+      if (!mounted || request != _orderRequest || isSupersededUpdate(e)) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (initial && mounted && request == _orderRequest) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
   void _onConfigChanged() {
@@ -122,6 +176,15 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
       _lastResult = null;
     });
     _scheduleOrder(initial: _intent == null);
+  }
+
+  /// A failed mount bind sends a result and no Ready, so the loader ends here.
+  void _onWalletResult(PaymentResult result) {
+    setState(() {
+      _lastResult = result;
+      _ready = true;
+      _consumed = result is! PaymentResultCanceled;
+    });
   }
 
   Future<void> _presentSheet() async {
@@ -244,8 +307,7 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
                     ),
                     onMinus: () {
                       setState(() {
-                        _amountMinor =
-                            (_amountMinor - 500).clamp(500, 999999);
+                        _amountMinor = (_amountMinor - 500).clamp(500, 999999);
                       });
                       _scheduleOrder(initial: false);
                     },
@@ -291,28 +353,24 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
                               ? ApplePayButton(
                                   configuration: config,
                                   intent: intent,
+                                  controller: _walletController,
                                   onEvent: (e) {
                                     if (isNativeBoundWalletEvent(e)) {
                                       setState(() => _ready = true);
                                     }
                                   },
-                                  onResult: (r) => setState(() {
-                                    _lastResult = r;
-                                    _consumed = r is! PaymentResultCanceled;
-                                  }),
+                                  onResult: _onWalletResult,
                                 )
                               : GooglePayButton(
                                   configuration: config,
                                   intent: intent,
+                                  controller: _walletController,
                                   onEvent: (e) {
                                     if (isNativeBoundWalletEvent(e)) {
                                       setState(() => _ready = true);
                                     }
                                   },
-                                  onResult: (r) => setState(() {
-                                    _lastResult = r;
-                                    _consumed = r is! PaymentResultCanceled;
-                                  }),
+                                  onResult: _onWalletResult,
                                 ),
                         ),
                       )
@@ -321,18 +379,20 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
                         ready: _ready,
                         message: 'Preparing checkout…',
                         child: PaymentElement(
-                          key: ValueKey(Object.hash(
-                            _savedCards,
-                            _submitVisible,
-                            _validation,
-                            _grouping,
-                            _style,
-                            _locale,
-                            _applePay,
-                            _googlePay,
-                            _submitType,
-                            dark,
-                          )),
+                          key: ValueKey(
+                            Object.hash(
+                              _savedCards,
+                              _submitVisible,
+                              _validation,
+                              _grouping,
+                              _style,
+                              _locale,
+                              _applePay,
+                              _googlePay,
+                              _submitType,
+                              dark,
+                            ),
+                          ),
                           controller: _elementController,
                           configuration: config,
                           intent: intent,

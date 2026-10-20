@@ -293,7 +293,7 @@ class MerchantReadyGate extends StatefulWidget {
   final Widget child;
   final Widget? placeholder;
 
-  /// Layout height offered to the native view while it is clipped offstage.
+  /// Minimum height of the cover while the element has not drawn.
   final double minHeight;
 
   @override
@@ -319,26 +319,24 @@ class _MerchantReadyGateState extends State<MerchantReadyGate> {
   Widget build(BuildContext context) {
     final placeholder =
         widget.placeholder ?? ExampleLoader(message: widget.message);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (_hasBound)
-          widget.child
-        else
-          SizedBox(
-            width: double.infinity,
-            height: 0,
-            child: ClipRect(
-              child: OverflowBox(
-                alignment: Alignment.topCenter,
-                minHeight: widget.minHeight,
-                maxHeight: widget.minHeight < 4000 ? 4000 : widget.minHeight,
-                child: IgnorePointer(child: widget.child),
-              ),
+    final cover = context.exampleColors.bg;
+    // The element stays in the same slot so becoming ready does not dispose
+    // the platform view and restart the native loader.
+    return ConstrainedBox(
+      constraints: BoxConstraints(minHeight: _hasBound ? 0 : widget.minHeight),
+      child: Stack(
+        children: [
+          ExcludeSemantics(
+            excluding: !_hasBound,
+            child: IgnorePointer(
+              ignoring: !_hasBound,
+              child: widget.child,
             ),
           ),
-        if (!_hasBound) placeholder,
-      ],
+          if (!_hasBound) Positioned.fill(child: ColoredBox(color: cover)),
+          if (!_hasBound) placeholder,
+        ],
+      ),
     );
   }
 }

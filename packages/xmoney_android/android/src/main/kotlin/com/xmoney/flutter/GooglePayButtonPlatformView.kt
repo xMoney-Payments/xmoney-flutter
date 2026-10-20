@@ -50,6 +50,7 @@ internal class GooglePayButtonPlatformView(
     private var isEnabled = params["isEnabled"] as? Boolean ?: true
     private var prepared by mutableStateOf<Pair<PaymentConfig, PaymentIntent>?>(null)
     private var controllerRef: GooglePayController? = null
+    private val orders = PendingOrders()
     private var disabledState by mutableStateOf(false)
     private var lastAvailability: String? = null
     private var boundActivity: FragmentActivity? = null
@@ -111,6 +112,16 @@ internal class GooglePayButtonPlatformView(
                                 )
                                 emitAvailability()
                             }
+                            is GooglePayEvent.UpdateFailed -> {
+                                emitEvent(
+                                    mapOf(
+                                        "type" to "onUpdateFailed",
+                                        "code" to event.error.code,
+                                        "message" to event.error.merchantMessage(),
+                                    ),
+                                )
+                                emitAvailability()
+                            }
                         }
                     },
                 )
@@ -127,6 +138,23 @@ internal class GooglePayButtonPlatformView(
                 orderPayload = args?.get("orderPayload") as? String ?: orderPayload
                 orderChecksum = args?.get("orderChecksum") as? String ?: orderChecksum
                 updateOrder(result)
+            }
+            "beginUpdateOrder" -> beginUpdateOrder(requestId(call), result)
+            "resolveOrder" -> {
+                val requestId = requestId(call)
+                val args = call.arguments as? Map<*, *>
+                orders.settle(
+                    requestId,
+                    BridgeConfigParser.parseIntent(
+                        args?.get("orderPayload") as? String ?: "",
+                        args?.get("orderChecksum") as? String ?: "",
+                    ),
+                )
+                result.success(null)
+            }
+            "rejectOrder" -> {
+                orders.settleRejected(requestId(call))
+                result.success(null)
             }
             "updateAppearance" -> {
                 @Suppress("UNCHECKED_CAST")
@@ -151,6 +179,53 @@ internal class GooglePayButtonPlatformView(
         }
     }
 
+    private fun requestId(call: MethodCall): String {
+        return (call.arguments as? Map<*, *>)?.get("requestId") as? String ?: ""
+    }
+
+    /// Locks the wallet button, then waits for Dart to resolve or reject the order.
+    private fun beginUpdateOrder(requestId: String, result: MethodChannel.Result) {
+        val deferred = orders.gate(requestId)
+        val controller = controllerRef
+        val hostActivity = activityProvider()
+        if (deferred == null || controller == null || hostActivity == null) {
+            orders.close(requestId)
+            result.error("NOT_INITIALIZED", "Call init before present.", null)
+            return
+        }
+        hostActivity.lifecycleScope.launch {
+            try {
+                val bound = controller.updateOrder {
+                    emitAvailability()
+                    deferred.await()
+                }
+                prepared = BridgeConfigParser.parse(
+                    configurationMap,
+                    bound.orderPayload,
+                    bound.orderChecksum,
+                )
+                emitAvailability()
+                result.success(null)
+            } catch (_: OrderCreationRejected) {
+                result.error("ORDER_CREATION_FAILED", "Order creation failed", null)
+            } catch (_: CancellationException) {
+                result.error(
+                    "SUPERSEDED_UPDATE_ORDER",
+                    "Superseded by a newer updateOrder call",
+                    null,
+                )
+            } catch (error: PaymentError.PaymentInProgress) {
+                result.error("PAYMENT_IN_PROGRESS", error.merchantMessage(), null)
+            } catch (error: PaymentError) {
+                result.error(error.code, error.merchantMessage(), null)
+            } catch (_: Exception) {
+                result.error("PRESENT_ERROR", "Failed to present", null)
+            } finally {
+                orders.close(requestId)
+            }
+        }
+    }
+
     private fun updateOrder(result: MethodChannel.Result) {
         val controller = controllerRef
         val hostActivity = activityProvider()
@@ -167,11 +242,12 @@ internal class GooglePayButtonPlatformView(
                 result.success(null)
             } catch (error: CancellationException) {
                 result.error("SUPERSEDED_UPDATE_ORDER", "Superseded by a newer updateOrder call", null)
+            } catch (error: PaymentError.PaymentInProgress) {
+                result.error("PAYMENT_IN_PROGRESS", error.merchantMessage(), null)
+            } catch (error: PaymentError) {
+                result.error(error.code, error.merchantMessage(), null)
             } catch (error: Exception) {
-                val code = if (error is PaymentError) error.code else "PRESENT_ERROR"
-                val message =
-                    if (error is PaymentError) error.merchantMessage() else "Failed to present"
-                result.error(code, message, null)
+                result.error("PRESENT_ERROR", "Failed to present", null)
             }
         }
     }
@@ -206,6 +282,7 @@ internal class GooglePayButtonPlatformView(
     override fun getView(): View = frame
 
     override fun dispose() {
+        orders.cancelAll()
         HostActivity.removeListener(activityListener)
         buttonChannel.setMethodCallHandler(null)
     }

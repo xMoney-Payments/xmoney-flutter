@@ -10,8 +10,8 @@ import 'package:flutter/services.dart';
 import 'package:xmoney_platform_interface/xmoney_platform_interface.dart';
 
 import '../card_holder_verification.dart';
-import '../errors.dart';
 import '../native_events.dart';
+import '../order_updater.dart';
 import '../parse_result.dart';
 import '../platform_target.dart';
 
@@ -21,9 +21,12 @@ sealed class PaymentElementEvent {
   const PaymentElementEvent();
 }
 
-/// The embedded form finished binding and can be shown.
+/// The embedded form has drawn and can be shown.
+///
+/// Fires once per mount, after the first draw, and not on a failure screen.
+/// A failed first load does not emit this event.
 final class PaymentElementReadyEvent extends PaymentElementEvent {
-  /// The form is bound.
+  /// The form has drawn.
   const PaymentElementReadyEvent();
 }
 
@@ -34,6 +37,24 @@ final class PaymentElementProcessingEvent extends PaymentElementEvent {
 
   /// Whether a charge is in flight.
   final bool isProcessing;
+}
+
+/// Binding a new order failed after an order was already bound.
+///
+/// Pay stays locked on the previous order until
+/// [PaymentElementController.updateOrder] succeeds.
+final class PaymentElementUpdateFailedEvent extends PaymentElementEvent {
+  /// A failed rebind. [code] and [message] are SDK-authored.
+  const PaymentElementUpdateFailedEvent({
+    required this.code,
+    required this.message,
+  });
+
+  /// Stable error code, such as `LOAD_ERROR`.
+  final String code;
+
+  /// SDK-authored message. Safe to display.
+  final String message;
 }
 
 /// Pay and wallet availability for the mounted element.
@@ -47,7 +68,8 @@ final class PaymentElementAvailabilityEvent extends PaymentElementEvent {
   /// True after a terminal result consumes the order checksum.
   final bool isOrderConsumed;
 
-  /// False during [PaymentElementController.updateOrder] and while a charge is in flight.
+  /// False during [PaymentElementController.updateOrder], while a charge is in
+  /// flight, and after a failed rebind until a later update succeeds.
   final bool isInteractionEnabled;
 }
 
@@ -74,7 +96,7 @@ class PaymentElement extends StatefulWidget {
   /// Optional handle for [PaymentElementController.confirm] and later updates.
   final PaymentElementController? controller;
 
-  /// Ready, processing, and availability while the form is mounted.
+  /// Ready, processing, update failure, and availability while the form is mounted.
   final void Function(PaymentElementEvent event)? onEvent;
 
   /// Terminal payment result. Session tokens are not included.
@@ -153,7 +175,7 @@ class _PaymentElementState extends State<PaymentElement>
         oldWidget.configuration.publicKey != widget.configuration.publicKey ||
         !_configEquivalent(oldWidget.configuration, widget.configuration);
     if (intentChanged && !configChanged) {
-      _controller?.updateOrder(widget.intent);
+      _controller?._relayWidgetIntent(widget.intent);
     } else if (configChanged || intentChanged) {
       _controller?._updateFromWidget(
         widget.configuration,
@@ -196,6 +218,10 @@ class _PaymentElementState extends State<PaymentElement>
               widget.onEvent?.call(const PaymentElementReadyEvent());
             case PaymentSheetProcessingEvent(:final isProcessing):
               widget.onEvent?.call(PaymentElementProcessingEvent(isProcessing));
+            case PaymentSheetUpdateFailedEvent(:final code, :final message):
+              widget.onEvent?.call(
+                PaymentElementUpdateFailedEvent(code: code, message: message),
+              );
           }
         }
         final availability = mapEmbeddedAvailabilityFlags(event);
@@ -398,27 +424,37 @@ class _PaymentElementState extends State<PaymentElement>
   }
 }
 
+/// Attaches a channel without a platform view. Widget tests use this.
+@visibleForTesting
+void attachPaymentElementControllerForTest(
+  PaymentElementController controller,
+  MethodChannel channel,
+) {
+  controller._attach(channel, () => true);
+}
+
 /// Controls an embedded [PaymentElement].
 class PaymentElementController {
-  MethodChannel? _channel;
-  bool Function()? _mounted;
+  final OrderUpdater _orders = OrderUpdater();
 
   void _attach(MethodChannel channel, bool Function() mounted) {
-    _channel = channel;
-    _mounted = mounted;
+    _orders.attach(channel, mounted);
   }
 
-  void _detach() {
-    _channel = null;
-    _mounted = null;
-  }
+  void _detach() => _orders.detach();
+
+  /// Skips the rebind [PaymentElement] would send for an intent this
+  /// controller already handed to the native SDK, including one still in flight.
+  void _relayWidgetIntent(PaymentIntent intent) =>
+      _orders.relayWidgetIntent(intent);
 
   void _updateFromWidget(
     PaymentConfig configuration,
     PaymentIntent intent,
     String chvId,
   ) {
-    _invoke('updateAll', {
+    _orders.forgetAndSupersede();
+    _orders.invoke('updateAll', {
       'configuration': toNativeConfiguration(configuration, chvId),
       'orderPayload': intent.orderPayload,
       'orderChecksum': intent.orderChecksum,
@@ -426,49 +462,56 @@ class PaymentElementController {
   }
 
   /// Submits the selected card. Wallet buttons use their own native UI.
-  Future<void> confirm() async => _invoke('confirm');
+  Future<void> confirm() async => _orders.invoke('confirm');
 
   /// Rebinds [intent] on the mounted form. Pay stays disabled until bind finishes.
-  Future<void> updateOrder(PaymentIntent intent) async =>
-      _invoke('updateOrder', {
-        'orderPayload': intent.orderPayload,
-        'orderChecksum': intent.orderChecksum,
-      });
+  ///
+  /// After a failed rebind, Pay stays locked on the previous order until a
+  /// later [updateOrder] succeeds.
+  ///
+  /// Pay stays enabled while you create [intent]. Use [updateOrderWith] when
+  /// the shopper changes the cart, so Pay locks before your server responds.
+  Future<void> updateOrder(PaymentIntent intent) => _orders.updateOrder(intent);
+
+  /// Whether the [updateOrderWith] callback on the stack is still current.
+  ///
+  /// False once a newer update starts or the native lock for this call ends.
+  /// Check it after a debounce so a superseded callback does not create an
+  /// order. True outside an [updateOrderWith] callback.
+  bool get isUpdateCurrent => _orders.isUpdateCurrent;
+
+  /// Locks Pay, creates the next order, binds it, and returns it.
+  ///
+  /// Pay, confirm, and wallet buttons are no-ops from this call until the new
+  /// order is bound, including while [createOrder] talks to your server. If
+  /// [createOrder] throws, the previous order stays payable and that error is
+  /// rethrown. A newer update supersedes this one
+  /// (`SUPERSEDED_UPDATE_ORDER`). After a debounce, check [isUpdateCurrent]
+  /// and stop before calling your server when it is false.
+  Future<PaymentIntent> updateOrderWith(
+    Future<PaymentIntent> Function() createOrder,
+  ) => _orders.updateOrderWith(createOrder);
 
   /// Restyles the mounted form without remounting.
   Future<void> updateAppearance(AppearanceConfig appearance) async =>
-      _invoke('updateAppearance', {'appearance': appearance.toJson()});
+      _orders.invoke('updateAppearance', {'appearance': appearance.toJson()});
 
   /// Sets UI language and pay-button amount punctuation.
   Future<void> updateLocale(String locale) async =>
-      _invoke('updateLocale', {'locale': locale});
+      _orders.invoke('updateLocale', {'locale': locale});
 
   /// Sets light, dark, or automatic chrome on the mounted form.
   Future<void> updateStyle(UserInterfaceStyle style) async =>
-      _invoke('updateStyle', {'style': style.value});
+      _orders.invoke('updateStyle', {'style': style.value});
 
   /// Restyles the Apple Pay or Google Pay button on the mounted form.
   Future<void> updateWalletAppearance({
     ApplePayConfig? applePay,
     GooglePayConfig? googlePay,
-  }) async => _invoke('updateWalletAppearance', {
+  }) async => _orders.invoke('updateWalletAppearance', {
     if (applePay?.appearance != null)
       'applePay': applePay!.appearance!.toJson(),
     if (googlePay?.appearance != null)
       'googlePay': googlePay!.appearance!.toJson(),
   });
-
-  Future<void> _invoke(String method, [Map<String, dynamic>? args]) async {
-    if (_channel == null || _mounted?.call() != true) {
-      throw XMoneyPaymentError(
-        'NOT_INITIALIZED',
-        stableMessages['NOT_INITIALIZED']!,
-      );
-    }
-    try {
-      await _channel!.invokeMethod<void>(method, args);
-    } on PlatformException catch (error) {
-      throw XMoneyPaymentError.from(error);
-    }
-  }
 }

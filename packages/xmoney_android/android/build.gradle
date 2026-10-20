@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.xmoney.flutter"
-version = "0.0.2"
+version = "0.0.3"
 
 android {
     namespace = "com.xmoney.flutter"
@@ -41,9 +41,9 @@ android {
 }
 
 dependencies {
-    implementation("com.xmoney:paymentsheet:1.0.0")
-    implementation("com.xmoney:paymentelement:1.0.0")
-    implementation("com.xmoney:googlepay:1.0.0")
+    implementation("com.xmoney:paymentsheet:1.1.0")
+    implementation("com.xmoney:paymentelement:1.1.0")
+    implementation("com.xmoney:googlepay:1.1.0")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")

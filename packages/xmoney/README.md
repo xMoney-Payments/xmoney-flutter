@@ -16,13 +16,13 @@ Flutter SDK for [xMoney](https://xmoney.com) checkout. Three surfaces, one `Paym
 - iOS 15.0+
 - Android `minSdk` 23
 
-Native SDKs: Android `com.xmoney:*` **1.0.0**, iOS `XMoneyPaymentSheet` **1.0.1**.
+Native SDKs: Android `com.xmoney:*` **1.1.0**, iOS `XMoneyPaymentSheet` **1.1.0**.
 
 ## Installation
 
 ```yaml
 dependencies:
-  xmoney: ^0.0.2
+  xmoney: ^0.0.3
 ```
 
 ```bash
@@ -53,6 +53,24 @@ switch (result) {
 ```
 
 Full guide, Element, wallets, and order lifecycle: [github.com/xMoney-Payments/xmoney-flutter](https://github.com/xMoney-Payments/xmoney-flutter).
+
+## Update an order
+
+`updateOrder` rebinds a signed order you already have. Pay stays enabled while your server creates that order.
+
+When the shopper changes the cart, use `updateOrderWith`. Pay locks immediately and stays locked until the order returned by the callback is bound, including during a debounce. If the callback throws, the previous order stays payable.
+
+```dart
+final next = await controller.updateOrderWith(() async {
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  if (!controller.isUpdateCurrent) throw StateError('superseded');
+  return createOrderOnYourServer(cartTotal);
+});
+```
+
+A newer call replaces an in-flight one and throws `XMoneyPaymentError` with code `SUPERSEDED_UPDATE_ORDER`. Check `isUpdateCurrent` after waiting so the older callback does not call your server. Keep the endpoint idempotent. During a charge it throws `PAYMENT_IN_PROGRESS` instead; show that error, because the order did not change.
+
+`WalletPayButtonController` has the same `updateOrderWith` and `isUpdateCurrent` for a standalone Apple Pay or Google Pay button. The button locks while your server creates the order, so a fast tap cannot charge the previous one. `WalletPayReadyEvent` fires after the mount order is bound and the button has drawn. A failed mount bind sends `PaymentResultFailed` and no ready event. A later bind failure emits `WalletPayUpdateFailedEvent` and the button stays locked until an update succeeds. Those update events follow the same contract on both platforms.
 
 ## License
 
