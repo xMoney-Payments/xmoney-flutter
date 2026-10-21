@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:xmoney/xmoney.dart';
 
@@ -35,7 +33,7 @@ class _UpdateOrderSampleState extends State<UpdateOrderSample> {
   var _ready = false;
   var _canPay = true;
   var _consumed = false;
-  Timer? _debounce;
+  var _orderRequest = 0;
 
   @override
   void initState() {
@@ -50,34 +48,80 @@ class _UpdateOrderSampleState extends State<UpdateOrderSample> {
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    _orderRequest++;
     super.dispose();
   }
 
   void _scheduleOrder({required bool initial}) {
     if (_consumed) return;
-    _debounce?.cancel();
-    _debounce = Timer(Duration(milliseconds: initial ? 0 : 300), () async {
-      if (initial) setState(() => _loading = true);
+    final request = ++_orderRequest;
+    final amount = _amountMinor;
+    if (initial) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    } else {
       setState(() => _error = null);
-      try {
-        final next = await DemoCheckoutBackend(widget.secrets)
-            .createPaymentIntent(amountMinor: _amountMinor);
-        if (!mounted) return;
-        if (_intent != null) {
-          await _controller.updateOrder(next);
-        }
-        setState(() {
-          _intent = next;
-          _canPay = false;
-        });
-      } catch (e) {
-        if (!mounted) return;
-        setState(() => _error = e.toString());
-      } finally {
-        if (initial && mounted) setState(() => _loading = false);
+    }
+    if (_intent != null) {
+      _replaceOrder(request, amount, debounce: !initial, initial: initial);
+    } else {
+      _loadOrder(request, amount, initial: initial);
+    }
+  }
+
+  Future<void> _loadOrder(
+    int request,
+    int amount, {
+    required bool initial,
+  }) async {
+    try {
+      final next = await DemoCheckoutBackend(
+        widget.secrets,
+      ).createPaymentIntent(amountMinor: amount);
+      if (!mounted || request != _orderRequest) return;
+      setState(() {
+        _intent = next;
+        _canPay = false;
+      });
+    } catch (e) {
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (initial && mounted && request == _orderRequest) {
+        setState(() => _loading = false);
       }
-    });
+    }
+  }
+
+  /// Locks Pay immediately, then binds the order created after the debounce.
+  Future<void> _replaceOrder(
+    int request,
+    int amount, {
+    required bool debounce,
+    required bool initial,
+  }) async {
+    try {
+      final next = await _controller.updateOrderWith(() async {
+        if (debounce) {
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+        }
+        if (!_controller.isUpdateCurrent) throw StateError('superseded');
+        return DemoCheckoutBackend(
+          widget.secrets,
+        ).createPaymentIntent(amountMinor: amount);
+      });
+      if (!mounted || request != _orderRequest) return;
+      setState(() => _intent = next);
+    } catch (e) {
+      if (!mounted || request != _orderRequest || isSupersededUpdate(e)) return;
+      setState(() => _error = e.toString());
+    } finally {
+      if (initial && mounted && request == _orderRequest) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
   void _changeAmount(int delta) {
@@ -146,8 +190,10 @@ class _UpdateOrderSampleState extends State<UpdateOrderSample> {
                 message: 'Preparing checkout…',
                 child: PaymentElement(
                   controller: _controller,
-                  configuration:
-                      defaultPaymentConfig(widget.secrets, dark: dark),
+                  configuration: defaultPaymentConfig(
+                    widget.secrets,
+                    dark: dark,
+                  ),
                   intent: intent,
                   onEvent: (event) {
                     if (isNativeBoundElementEvent(event)) {

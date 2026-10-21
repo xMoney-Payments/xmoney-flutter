@@ -162,10 +162,18 @@ final class XMoneyHostController {
             do {
                 try await applePay.updateOrder(intent: intent)
                 result(nil)
+            } catch is CancellationError {
+                result(
+                    FlutterError(
+                        code: "SUPERSEDED_UPDATE_ORDER",
+                        message: "Superseded by a newer updateOrder call",
+                        details: nil
+                    )
+                )
             } catch let error as PaymentError {
                 result(
                     FlutterError(
-                        code: error.code,
+                        code: bridgeErrorCode(error),
                         message: error.merchantMessage(),
                         details: nil
                     )

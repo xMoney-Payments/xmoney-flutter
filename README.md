@@ -16,15 +16,15 @@ Flutter SDK for [xMoney](https://xmoney.com) checkout. Three surfaces, one `Paym
 - iOS 15.0+
 - Android `minSdk` 23
 
-Native SDKs: Android `com.xmoney:*` **1.0.0**, iOS `XMoneyPaymentSheet` **1.0.1**.
+Native SDKs: Android `com.xmoney:*` **1.1.0**, iOS `XMoneyPaymentSheet` **1.1.0**.
 
 ## Installation
 
-Latest release: **`0.0.2`**
+Latest release: **`0.0.3`**
 
 ```yaml
 dependencies:
-  xmoney: ^0.0.2
+  xmoney: ^0.0.3
 ```
 
 ```bash
@@ -82,7 +82,7 @@ switch (result) {
 
 `failed` messages are SDK-authored. Do not display raw server bodies.
 
-Interim events (`PaymentSheetReadyEvent`, `PaymentSheetProcessingEvent`) are optional and do not replace the result. Use `ready` to hide merchant loading until the surface is bound. `processing` is an in-flight charge only — `updateOrder` does not emit it.
+Interim events (`PaymentSheetReadyEvent`, `PaymentSheetProcessingEvent`, `PaymentSheetUpdateFailedEvent`) are optional and do not replace the result. `ready` fires once per mounted surface, after the form or wallet button has drawn, and not when the first load fails — end merchant loading on `PaymentResultFailed` as well as `ready`. `processing` is an in-flight charge only — `updateOrder` does not emit it. `PaymentSheetUpdateFailedEvent` means a later order bind failed; Pay stays locked on the previous order until `updateOrder` succeeds.
 
 ## Order lifecycle
 
@@ -152,7 +152,7 @@ Copy-paste sample: [`payment_sheet_sample.dart`](example/lib/samples/payment_she
 
 ## Payment Element
 
-Same form as the sheet, without the bottom-sheet chrome. Mount it in your layout. Embedded does not add outer content padding or a page fill — the host background shows through; supply your own page spacing. Keep merchant loading until `onEvent` `PaymentElementReadyEvent`.
+Same form as the sheet, without the bottom-sheet chrome. Mount it in your layout. Embedded does not add outer content padding or a page fill — the host background shows through; supply your own page spacing. Keep merchant loading until `onEvent` `PaymentElementReadyEvent`, or until `onResult` `PaymentResultFailed` when the first load fails.
 
 ```dart
 import 'package:xmoney/xmoney.dart';
@@ -177,6 +177,9 @@ PaymentElement(
         // gate Pay / wallet
       case PaymentElementProcessingEvent():
         break;
+      case PaymentElementUpdateFailedEvent():
+        // Pay stays locked until updateOrder succeeds
+        break;
     }
   },
   onResult: (result) {
@@ -198,6 +201,20 @@ await controller.updateOrder(nextIntent);
 ```
 
 Keep the surface mounted; do not swap the form for a loader. Gate a merchant-owned Pay button with `isInteractionEnabled`.
+
+`updateOrder` does not lock Pay while your server creates `nextIntent`. When the shopper changes the cart, pass the server call to `updateOrderWith` instead. Pay locks immediately and stays locked, including during a debounce, until the returned order is bound. If the callback throws, the previous order stays payable and that error is rethrown.
+
+```dart
+final next = await controller.updateOrderWith(() async {
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  if (!controller.isUpdateCurrent) throw StateError('superseded');
+  return createOrderOnYourServer(cartTotal);
+});
+```
+
+- A newer update replaces this one and it throws `XMoneyPaymentError` `SUPERSEDED_UPDATE_ORDER`. Ignore it; the newer call owns the result. Check `isUpdateCurrent` after waiting so the replaced callback does not call your server, and keep the endpoint idempotent.
+- During a charge it throws `PAYMENT_IN_PROGRESS`. Show it; the amount did not change.
+- If a later bind fails, `PaymentElementUpdateFailedEvent` is emitted and Pay stays locked on the previous order until an update succeeds.
 
 Copy-paste sample: [`update_order_sample.dart`](example/lib/advanced/update_order_sample.dart)
 
@@ -270,6 +287,10 @@ ApplePayButton(
 
 `ApplePay.updateOrder` rebinds a signed `PaymentIntent` on the session opened by `present`. Before that session exists it throws `XMoneyPaymentError` (`NOT_INITIALIZED`). After `getState` or wallet-button `onEvent` `WalletPayAvailabilityEvent`, gate your own chrome with `isAvailable`, `isReady`, `isOrderConsumed`, and `isInteractionEnabled`.
 
+`ApplePayButton` binds the mount order before it is usable. `WalletPayReadyEvent` fires once that bind succeeds and the button has drawn. A failed mount bind sends `onResult` `PaymentResultFailed` and no ready event, so end a merchant loader on both.
+
+`updateOrder` does not lock the button while your server creates the next order. On a cart change, pass that call to `WalletPayButtonController.updateOrderWith`. The button locks immediately, including during a debounce, so a fast tap cannot charge the previous order. Check `isUpdateCurrent` after waiting and stop when it is false. The errors match the element: `SUPERSEDED_UPDATE_ORDER` means a newer update replaced this one (ignore it), and `PAYMENT_IN_PROGRESS` means a charge is in flight (show it). A later bind failure emits `WalletPayUpdateFailedEvent` and the button stays locked until an update succeeds. Those update events follow the same contract on both platforms.
+
 Pre-auth dismiss delivers `PaymentResultCanceled` and does **not** consume. Present or tap again with the same intent.
 
 ### Setup
@@ -312,6 +333,8 @@ GooglePayButton(
 ```
 
 `GooglePay.updateOrder` rebinds the open host — call **after** `present`, while the overlay is still open. Throws if no host is open. A second `present()` while one is in flight returns `PaymentResultCanceled` — `dismiss()` then `present()` to replace.
+
+`GooglePayButton` uses the same `WalletPayButtonController.updateOrderWith` and `isUpdateCurrent` as the Apple Pay button. The button locks while your server creates the order, and a failed mount bind sends `PaymentResultFailed` with no ready event.
 
 Pre-auth dismiss delivers `PaymentResultCanceled` and does **not** consume. Present or tap again with the same intent.
 
@@ -403,10 +426,10 @@ Use only these merchant-facing exports from `package:xmoney/xmoney.dart`:
 | Surface         | Types |
 | --------------- | ----- |
 | Config / models | `PaymentConfig` and nested options, `PaymentIntent`, `PaymentResult`, `PaymentError`, `Transaction`, `CardHolderVerificationResult` |
-| Payment Sheet   | `PaymentSheet`, `PaymentSheetController`, `PaymentSheetEvent` (`PaymentSheetReadyEvent`, `PaymentSheetProcessingEvent`) |
-| Payment Element | `PaymentElement`, `PaymentElementController` (`confirm`, `updateOrder`, `updateAppearance`, `updateLocale`, `updateStyle`, `updateWalletAppearance`), `PaymentElementEvent` |
-| Apple Pay       | `ApplePay` (`init`, `present`, `updateOrder`, `dismiss`, `getState`), `ApplePayButton`, `WalletPayButtonController`, `WalletPayEvent` |
-| Google Pay      | `GooglePay` (`init`, `present`, `updateOrder`, `dismiss`, `getState`), `GooglePayButton`, `WalletPayButtonController`, `WalletPayEvent` |
+| Payment Sheet   | `PaymentSheet`, `PaymentSheetController`, `PaymentSheetEvent` (`PaymentSheetReadyEvent`, `PaymentSheetProcessingEvent`, `PaymentSheetUpdateFailedEvent`) |
+| Payment Element | `PaymentElement`, `PaymentElementController` (`confirm`, `updateOrder`, `updateOrderWith`, `isUpdateCurrent`, `updateAppearance`, `updateLocale`, `updateStyle`, `updateWalletAppearance`), `PaymentElementEvent` (including `PaymentElementUpdateFailedEvent`) |
+| Apple Pay       | `ApplePay` (`init`, `present`, `updateOrder`, `dismiss`, `getState`), `ApplePayButton`, `WalletPayButtonController` (`updateOrder`, `updateOrderWith`, `isUpdateCurrent`), `WalletPayEvent` (including `WalletPayUpdateFailedEvent`) |
+| Google Pay      | `GooglePay` (`init`, `present`, `updateOrder`, `dismiss`, `getState`), `GooglePayButton`, `WalletPayButtonController` (`updateOrder`, `updateOrderWith`, `isUpdateCurrent`), `WalletPayEvent` (including `WalletPayUpdateFailedEvent`) |
 | Errors          | `XMoneyPaymentError` (`NOT_LINKED` when the plugin is missing) |
 
 ## PCI scope

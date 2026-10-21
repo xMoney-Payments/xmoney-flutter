@@ -12,7 +12,16 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.2
-  xmoney: ^0.0.2
+  xmoney:
+    path: ../packages/xmoney
+
+dependency_overrides:
+  xmoney_platform_interface:
+    path: ../packages/xmoney_platform_interface
+  xmoney_android:
+    path: ../packages/xmoney_android
+  xmoney_ios:
+    path: ../packages/xmoney_ios
 
 dev_dependencies:
   flutter_test:

@@ -48,5 +48,5 @@ Integrations and name-check include a **Test cards** sheet with the four xMoney 
 - Integrations samples use `defaultPaymentConfig()` with saved cards and example appearance — adjust for your brand.
 - After `complete`, `failed`, or post-submit `canceled`, the order checksum is **consumed**. Create a new intent before paying again.
 - Closing Payment Sheet **before** pay does not consume; present the same intent (**Continue**).
-- Embedded / wallet: keep merchant loading until `onEvent` `ready`. Branch on `isOrderConsumed` after that.
+- Embedded / wallet: keep merchant loading until `onEvent` `ready`, or until a failed `onResult` when the first load fails. Branch on `isOrderConsumed` after that.
 - Cart amounts are **minor units** (cents). The demo backend converts to a decimal only at the HTTP boundary.

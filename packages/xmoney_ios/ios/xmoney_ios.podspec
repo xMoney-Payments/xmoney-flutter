@@ -3,7 +3,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'xmoney_ios'
-  s.version          = '0.0.2'
+  s.version          = '0.0.3'
   s.summary          = 'iOS implementation of the xMoney Flutter SDK.'
   s.homepage         = 'https://xmoney.com'
   s.license          = { :file => '../LICENSE' }
@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.source           = { :path => '.' }
   s.source_files     = 'xmoney_ios/Sources/xmoney_ios/**/*'
   s.dependency 'Flutter'
-  s.dependency 'XMoneyPaymentSheet', '1.0.1'
+  s.dependency 'XMoneyPaymentSheet', '1.1.0'
   s.platform = :ios, '15.0'
   s.swift_version = '5.9'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }

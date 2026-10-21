@@ -10,6 +10,7 @@ const stableMessages = <String, String>{
   'PRESENT_ERROR': 'Failed to present',
   'LOAD_ERROR': 'Failed to load',
   'SUPERSEDED_UPDATE_ORDER': 'Superseded by a newer updateOrder call',
+  'PAYMENT_IN_PROGRESS': 'Payment in progress',
   'APPLE_PAY': 'Apple Pay is only available on iOS.',
   'GOOGLE_PAY': 'Google Pay is only available on Android.',
 };

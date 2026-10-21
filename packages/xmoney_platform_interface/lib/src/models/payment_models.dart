@@ -78,7 +78,10 @@ sealed class PaymentSheetEvent {
   const PaymentSheetEvent();
 }
 
-/// The native surface finished binding the order and is interactive.
+/// The native surface has drawn and can be shown.
+///
+/// Fires once per mounted surface, after the first draw, and not on a failure
+/// screen. A failed first load does not emit this event.
 final class PaymentSheetReadyEvent extends PaymentSheetEvent {
   const PaymentSheetReadyEvent();
 }
@@ -88,6 +91,23 @@ final class PaymentSheetProcessingEvent extends PaymentSheetEvent {
   const PaymentSheetProcessingEvent(this.isProcessing);
 
   final bool isProcessing;
+}
+
+/// Binding a new order failed after an order was already bound.
+///
+/// Pay stays locked on the previous order until a later update succeeds.
+final class PaymentSheetUpdateFailedEvent extends PaymentSheetEvent {
+  /// A failed rebind. [code] and [message] are SDK-authored.
+  const PaymentSheetUpdateFailedEvent({
+    required this.code,
+    required this.message,
+  });
+
+  /// Stable error code, such as `LOAD_ERROR`.
+  final String code;
+
+  /// SDK-authored message. Safe to display.
+  final String message;
 }
 
 typedef EmbeddedEvent = PaymentSheetEvent;
@@ -107,6 +127,20 @@ final class WalletPayProcessingEvent extends WalletPayEvent {
   const WalletPayProcessingEvent(this.isProcessing);
 
   final bool isProcessing;
+}
+
+/// Binding a new order failed after an order was already bound.
+///
+/// Pay stays locked on the previous order until a later update succeeds.
+final class WalletPayUpdateFailedEvent extends WalletPayEvent {
+  /// A failed rebind. [code] and [message] are SDK-authored.
+  const WalletPayUpdateFailedEvent({required this.code, required this.message});
+
+  /// Stable error code, such as `LOAD_ERROR`.
+  final String code;
+
+  /// SDK-authored message. Safe to display.
+  final String message;
 }
 
 final class WalletPayAvailabilityEvent extends WalletPayEvent {
@@ -177,19 +211,19 @@ class AppearanceColors {
   final String? containerBorder;
 
   Map<String, dynamic> toJson() => {
-        if (primary != null) 'primary': primary,
-        if (background != null) 'background': background,
-        if (componentBackground != null) 'componentBackground': componentBackground,
-        if (componentBorder != null) 'componentBorder': componentBorder,
-        if (componentDivider != null) 'componentDivider': componentDivider,
-        if (primaryText != null) 'primaryText': primaryText,
-        if (secondaryText != null) 'secondaryText': secondaryText,
-        if (componentText != null) 'componentText': componentText,
-        if (placeholderText != null) 'placeholderText': placeholderText,
-        if (icon != null) 'icon': icon,
-        if (error != null) 'error': error,
-        if (containerBorder != null) 'containerBorder': containerBorder,
-      };
+    if (primary != null) 'primary': primary,
+    if (background != null) 'background': background,
+    if (componentBackground != null) 'componentBackground': componentBackground,
+    if (componentBorder != null) 'componentBorder': componentBorder,
+    if (componentDivider != null) 'componentDivider': componentDivider,
+    if (primaryText != null) 'primaryText': primaryText,
+    if (secondaryText != null) 'secondaryText': secondaryText,
+    if (componentText != null) 'componentText': componentText,
+    if (placeholderText != null) 'placeholderText': placeholderText,
+    if (icon != null) 'icon': icon,
+    if (error != null) 'error': error,
+    if (containerBorder != null) 'containerBorder': containerBorder,
+  };
 }
 
 class PrimaryButtonColors {
@@ -200,10 +234,10 @@ class PrimaryButtonColors {
   final String? border;
 
   Map<String, dynamic> toJson() => {
-        if (background != null) 'background': background,
-        if (text != null) 'text': text,
-        if (border != null) 'border': border,
-      };
+    if (background != null) 'background': background,
+    if (text != null) 'text': text,
+    if (border != null) 'border': border,
+  };
 }
 
 class PrimaryButtonConfig {
@@ -224,16 +258,16 @@ class PrimaryButtonConfig {
   final double? borderWidth;
 
   Map<String, dynamic> toJson() => {
-        if (fontFamily != null) 'font': {'family': fontFamily},
-        if (colors != null) 'colors': colors!.toJson(),
-        if (colorsLight != null) 'colorsLight': colorsLight!.toJson(),
-        if (colorsDark != null) 'colorsDark': colorsDark!.toJson(),
-        if (borderRadius != null || borderWidth != null)
-          'shapes': {
-            if (borderRadius != null) 'borderRadius': borderRadius,
-            if (borderWidth != null) 'borderWidth': borderWidth,
-          },
-      };
+    if (fontFamily != null) 'font': {'family': fontFamily},
+    if (colors != null) 'colors': colors!.toJson(),
+    if (colorsLight != null) 'colorsLight': colorsLight!.toJson(),
+    if (colorsDark != null) 'colorsDark': colorsDark!.toJson(),
+    if (borderRadius != null || borderWidth != null)
+      'shapes': {
+        if (borderRadius != null) 'borderRadius': borderRadius,
+        if (borderWidth != null) 'borderWidth': borderWidth,
+      },
+  };
 }
 
 class AppearanceConfig {
@@ -258,21 +292,21 @@ class AppearanceConfig {
   final PrimaryButtonConfig? primaryButton;
 
   Map<String, dynamic> toJson() => {
-        if (fontFamily != null || fontScale != null)
-          'font': {
-            if (fontFamily != null) 'family': fontFamily,
-            if (fontScale != null) 'scale': fontScale,
-          },
-        if (colors != null) 'colors': colors!.toJson(),
-        if (colorsLight != null) 'colorsLight': colorsLight!.toJson(),
-        if (colorsDark != null) 'colorsDark': colorsDark!.toJson(),
-        if (borderRadius != null || borderWidth != null)
-          'shapes': {
-            if (borderRadius != null) 'borderRadius': borderRadius,
-            if (borderWidth != null) 'borderWidth': borderWidth,
-          },
-        if (primaryButton != null) 'primaryButton': primaryButton!.toJson(),
-      };
+    if (fontFamily != null || fontScale != null)
+      'font': {
+        if (fontFamily != null) 'family': fontFamily,
+        if (fontScale != null) 'scale': fontScale,
+      },
+    if (colors != null) 'colors': colors!.toJson(),
+    if (colorsLight != null) 'colorsLight': colorsLight!.toJson(),
+    if (colorsDark != null) 'colorsDark': colorsDark!.toJson(),
+    if (borderRadius != null || borderWidth != null)
+      'shapes': {
+        if (borderRadius != null) 'borderRadius': borderRadius,
+        if (borderWidth != null) 'borderWidth': borderWidth,
+      },
+    if (primaryButton != null) 'primaryButton': primaryButton!.toJson(),
+  };
 }
 
 class SavedCardsConfig {
@@ -282,9 +316,9 @@ class SavedCardsConfig {
   final bool? optInVisible;
 
   Map<String, dynamic> toJson() => {
-        if (enabled != null) 'enabled': enabled,
-        if (optInVisible != null) 'optInVisible': optInVisible,
-      };
+    if (enabled != null) 'enabled': enabled,
+    if (optInVisible != null) 'optInVisible': optInVisible,
+  };
 }
 
 class CardHolderName {
@@ -307,7 +341,7 @@ class CardHolderVerification {
 
   final CardHolderName name;
   final bool Function(CardHolderVerificationResult result)
-      onCardHolderVerification;
+  onCardHolderVerification;
 }
 
 class CardInputsConfig {
@@ -316,8 +350,8 @@ class CardInputsConfig {
   final CardGrouping? grouping;
 
   Map<String, dynamic> toJson() => {
-        if (grouping != null) 'grouping': grouping!.value,
-      };
+    if (grouping != null) 'grouping': grouping!.value,
+  };
 }
 
 class SubmitButtonConfig {
@@ -327,9 +361,9 @@ class SubmitButtonConfig {
   final SubmitButtonType? type;
 
   Map<String, dynamic> toJson() => {
-        if (visible != null) 'visible': visible,
-        if (type != null) 'type': type!.value,
-      };
+    if (visible != null) 'visible': visible,
+    if (type != null) 'type': type!.value,
+  };
 }
 
 class CardConfig {
@@ -348,11 +382,11 @@ class CardConfig {
   final SubmitButtonConfig? submitButton;
 
   Map<String, dynamic> toJson() => {
-        if (savedCards != null) 'savedCards': savedCards!.toJson(),
-        if (inputs != null) 'inputs': inputs!.toJson(),
-        if (validationMode != null) 'validationMode': validationMode!.value,
-        if (submitButton != null) 'submitButton': submitButton!.toJson(),
-      };
+    if (savedCards != null) 'savedCards': savedCards!.toJson(),
+    if (inputs != null) 'inputs': inputs!.toJson(),
+    if (validationMode != null) 'validationMode': validationMode!.value,
+    if (submitButton != null) 'submitButton': submitButton!.toJson(),
+  };
 }
 
 class WalletAppearance {
@@ -363,10 +397,10 @@ class WalletAppearance {
   final WalletButtonType? type;
 
   Map<String, dynamic> toJson() => {
-        if (color != null) 'color': color!.value,
-        if (radius != null) 'radius': radius,
-        if (type != null) 'type': type!.value,
-      };
+    if (color != null) 'color': color!.value,
+    if (radius != null) 'radius': radius,
+    if (type != null) 'type': type!.value,
+  };
 }
 
 class ApplePayConfig {
@@ -376,9 +410,9 @@ class ApplePayConfig {
   final WalletAppearance? appearance;
 
   Map<String, dynamic> toJson() => {
-        if (enabled != null) 'enabled': enabled,
-        if (appearance != null) 'appearance': appearance!.toJson(),
-      };
+    if (enabled != null) 'enabled': enabled,
+    if (appearance != null) 'appearance': appearance!.toJson(),
+  };
 }
 
 class GooglePayConfig {
@@ -388,9 +422,9 @@ class GooglePayConfig {
   final WalletAppearance? appearance;
 
   Map<String, dynamic> toJson() => {
-        if (enabled != null) 'enabled': enabled,
-        if (appearance != null) 'appearance': appearance!.toJson(),
-      };
+    if (enabled != null) 'enabled': enabled,
+    if (appearance != null) 'appearance': appearance!.toJson(),
+  };
 }
 
 class PaymentMethodsConfig {
@@ -400,9 +434,9 @@ class PaymentMethodsConfig {
   final GooglePayConfig? googlePay;
 
   Map<String, dynamic> toJson() => {
-        if (applePay != null) 'applePay': applePay!.toJson(),
-        if (googlePay != null) 'googlePay': googlePay!.toJson(),
-      };
+    if (applePay != null) 'applePay': applePay!.toJson(),
+    if (googlePay != null) 'googlePay': googlePay!.toJson(),
+  };
 }
 
 class OptionsConfig {
@@ -413,10 +447,10 @@ class OptionsConfig {
   final AppearanceConfig? appearance;
 
   Map<String, dynamic> toJson() => {
-        if (locale != null) 'locale': locale,
-        if (style != null) 'style': style!.value,
-        if (appearance != null) 'appearance': appearance!.toJson(),
-      };
+    if (locale != null) 'locale': locale,
+    if (style != null) 'style': style!.value,
+    if (appearance != null) 'appearance': appearance!.toJson(),
+  };
 }
 
 class PaymentConfig {
@@ -433,11 +467,11 @@ class PaymentConfig {
   final OptionsConfig? options;
 
   Map<String, dynamic> toJson() => {
-        'publicKey': publicKey,
-        if (card != null) 'card': card!.toJson(),
-        if (paymentMethods != null) 'paymentMethods': paymentMethods!.toJson(),
-        if (options != null) 'options': options!.toJson(),
-      };
+    'publicKey': publicKey,
+    if (card != null) 'card': card!.toJson(),
+    if (paymentMethods != null) 'paymentMethods': paymentMethods!.toJson(),
+    if (options != null) 'options': options!.toJson(),
+  };
 }
 
 class PaymentIntent {
@@ -450,9 +484,9 @@ class PaymentIntent {
   final String orderChecksum;
 
   Map<String, dynamic> toJson() => {
-        'orderPayload': orderPayload,
-        'orderChecksum': orderChecksum,
-      };
+    'orderPayload': orderPayload,
+    'orderChecksum': orderChecksum,
+  };
 }
 
 class TransactionCustomer {

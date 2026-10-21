@@ -7,8 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:xmoney_platform_interface/xmoney_platform_interface.dart';
 
 import '../card_holder_verification.dart';
-import '../errors.dart';
 import '../native_events.dart';
+import '../order_updater.dart';
 import '../parse_result.dart';
 import '../platform_target.dart';
 
@@ -57,11 +57,13 @@ class ApplePayButton extends StatefulWidget {
 class _ApplePayButtonState extends State<ApplePayButton> {
   MethodChannel? _channel;
   late final String _chvId;
+  late final WalletPayButtonController _controller;
 
   @override
   void initState() {
     super.initState();
     _chvId = nextCardHolderVerificationId();
+    _controller = widget.controller ?? WalletPayButtonController();
   }
 
   @override
@@ -70,7 +72,7 @@ class _ApplePayButtonState extends State<ApplePayButton> {
     if (_channel == null) return;
     if (oldWidget.intent.orderChecksum != widget.intent.orderChecksum ||
         oldWidget.intent.orderPayload != widget.intent.orderPayload) {
-      widget.controller?.updateOrder(widget.intent);
+      _controller._relayWidgetIntent(widget.intent);
     }
     if (oldWidget.appearance != widget.appearance ||
         oldWidget.isEnabled != widget.isEnabled ||
@@ -92,7 +94,7 @@ class _ApplePayButtonState extends State<ApplePayButton> {
   void _onPlatformViewCreated(int viewId) {
     final channel = MethodChannel('$_appleViewType/$viewId');
     _channel = channel;
-    widget.controller?._attach(channel, () => mounted);
+    _controller._attach(channel, () => mounted);
     channel.setMethodCallHandler(_onPlatformCall);
   }
 
@@ -100,7 +102,7 @@ class _ApplePayButtonState extends State<ApplePayButton> {
   void dispose() {
     unregisterCardHolderVerification(_chvId);
     _channel?.setMethodCallHandler(null);
-    widget.controller?._detach();
+    _controller._detach();
     super.dispose();
   }
 
@@ -192,11 +194,13 @@ class GooglePayButton extends StatefulWidget {
 class _GooglePayButtonState extends State<GooglePayButton> {
   MethodChannel? _channel;
   late final String _chvId;
+  late final WalletPayButtonController _controller;
 
   @override
   void initState() {
     super.initState();
     _chvId = nextCardHolderVerificationId();
+    _controller = widget.controller ?? WalletPayButtonController();
   }
 
   @override
@@ -205,7 +209,7 @@ class _GooglePayButtonState extends State<GooglePayButton> {
     if (_channel == null) return;
     if (oldWidget.intent.orderChecksum != widget.intent.orderChecksum ||
         oldWidget.intent.orderPayload != widget.intent.orderPayload) {
-      widget.controller?.updateOrder(widget.intent);
+      _controller._relayWidgetIntent(widget.intent);
     }
     if (oldWidget.appearance != widget.appearance ||
         oldWidget.isEnabled != widget.isEnabled ||
@@ -227,7 +231,7 @@ class _GooglePayButtonState extends State<GooglePayButton> {
   void _onPlatformViewCreated(int viewId) {
     final channel = MethodChannel('$_googleViewType/$viewId');
     _channel = channel;
-    widget.controller?._attach(channel, () => mounted);
+    _controller._attach(channel, () => mounted);
     channel.setMethodCallHandler(_onPlatformCall);
   }
 
@@ -235,7 +239,7 @@ class _GooglePayButtonState extends State<GooglePayButton> {
   void dispose() {
     unregisterCardHolderVerification(_chvId);
     _channel?.setMethodCallHandler(null);
-    widget.controller?._detach();
+    _controller._detach();
     super.dispose();
   }
 
@@ -286,51 +290,66 @@ class _GooglePayButtonState extends State<GooglePayButton> {
   }
 }
 
+/// Attaches a channel without a platform view. Widget tests use this.
+@visibleForTesting
+void attachWalletPayButtonControllerForTest(
+  WalletPayButtonController controller,
+  MethodChannel channel,
+) {
+  controller._attach(channel, () => true);
+}
+
 /// Updates the order or appearance of a mounted [ApplePayButton] or [GooglePayButton].
 class WalletPayButtonController {
-  MethodChannel? _channel;
-  bool Function()? _mounted;
+  final OrderUpdater _orders = OrderUpdater();
 
   void _attach(MethodChannel channel, bool Function() mounted) {
-    _channel = channel;
-    _mounted = mounted;
+    _orders.attach(channel, mounted);
   }
 
-  void _detach() {
-    _channel = null;
-    _mounted = null;
-  }
+  void _detach() => _orders.detach();
+
+  /// Skips the rebind the widget would send for an intent already handed to
+  /// the native SDK, including one still in flight.
+  void _relayWidgetIntent(PaymentIntent intent) =>
+      _orders.relayWidgetIntent(intent);
+
+  /// The checksum of the last order handed to the native SDK.
+  @visibleForTesting
+  String? get sentChecksumForTest => _orders.sentChecksumForTest;
+
+  /// What [ApplePayButton] and [GooglePayButton] call from `didUpdateWidget`.
+  @visibleForTesting
+  void relayWidgetIntentForTest(PaymentIntent intent) =>
+      _relayWidgetIntent(intent);
 
   /// Rebinds [intent] on the mounted wallet button.
-  Future<void> updateOrder(PaymentIntent intent) async {
-    if (_channel == null || _mounted?.call() != true) {
-      throw XMoneyPaymentError(
-        'NOT_INITIALIZED',
-        stableMessages['NOT_INITIALIZED']!,
-      );
-    }
-    try {
-      await _channel!.invokeMethod<void>('updateOrder', intent.toJson());
-    } on PlatformException catch (error) {
-      throw XMoneyPaymentError.from(error);
-    }
-  }
+  ///
+  /// The button stays enabled while you create [intent]. Use [updateOrderWith]
+  /// when the shopper changes the cart, so the button locks before your server
+  /// responds.
+  Future<void> updateOrder(PaymentIntent intent) => _orders.updateOrder(intent);
+
+  /// Whether the [updateOrderWith] callback on the stack is still current.
+  ///
+  /// False once a newer update starts or the native lock for this call ends.
+  /// Check it after a debounce so a superseded callback does not create an
+  /// order. True outside an [updateOrderWith] callback.
+  bool get isUpdateCurrent => _orders.isUpdateCurrent;
+
+  /// Locks the wallet button, creates the next order, binds it, and returns it.
+  ///
+  /// The button is a no-op from this call until the new order is bound,
+  /// including while [createOrder] talks to your server, so a fast tap cannot
+  /// charge the previous order. If [createOrder] throws, the previous order
+  /// stays payable and that error is rethrown. A newer update supersedes this
+  /// one (`SUPERSEDED_UPDATE_ORDER`). After a debounce, check
+  /// [isUpdateCurrent] and stop before calling your server when it is false.
+  Future<PaymentIntent> updateOrderWith(
+    Future<PaymentIntent> Function() createOrder,
+  ) => _orders.updateOrderWith(createOrder);
 
   /// Restyles the mounted wallet button.
-  Future<void> updateAppearance(WalletAppearance appearance) async {
-    if (_channel == null || _mounted?.call() != true) {
-      throw XMoneyPaymentError(
-        'NOT_INITIALIZED',
-        stableMessages['NOT_INITIALIZED']!,
-      );
-    }
-    try {
-      await _channel!.invokeMethod<void>(
-        'updateAppearance',
-        appearance.toJson(),
-      );
-    } on PlatformException catch (error) {
-      throw XMoneyPaymentError.from(error);
-    }
-  }
+  Future<void> updateAppearance(WalletAppearance appearance) async =>
+      _orders.invoke('updateAppearance', appearance.toJson());
 }

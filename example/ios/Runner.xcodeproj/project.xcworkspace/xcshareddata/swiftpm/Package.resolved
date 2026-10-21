@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/xMoney-Payments/xmoney-ios.git",
       "state" : {
-        "revision" : "c264ec110af220c8def045f5d37e021f879e7cdc",
-        "version" : "1.0.1"
+        "revision" : "3b97560336f0ff2d72ee6064995128f39fdb7caa",
+        "version" : "1.1.0"
       }
     }
   ],

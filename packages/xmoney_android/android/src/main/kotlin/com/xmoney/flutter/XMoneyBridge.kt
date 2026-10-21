@@ -238,6 +238,11 @@ internal object XMoneyBridge {
                 "type" to "onProcessing",
                 "isProcessing" to event.isProcessing,
             )
+            is GooglePayEvent.UpdateFailed -> mapOf(
+                "type" to "onUpdateFailed",
+                "code" to event.error.code,
+                "message" to event.error.merchantMessage(),
+            )
         }
         emitEvent(channel, requestId, body)
     }
@@ -266,6 +271,8 @@ internal object XMoneyBridge {
                     "Superseded by a newer updateOrder call",
                     null,
                 )
+            is PaymentError.PaymentInProgress ->
+                result.error("PAYMENT_IN_PROGRESS", error.merchantMessage(), null)
             is PaymentError -> result.error(error.code, error.merchantMessage(), null)
             is IllegalStateException ->
                 result.error("GOOGLE_PAY", error.message ?: "Google Pay is not presented", null)

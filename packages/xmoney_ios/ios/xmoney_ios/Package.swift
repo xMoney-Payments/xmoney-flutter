@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(name: "FlutterFramework", path: "../FlutterFramework"),
-        .package(url: "https://github.com/xMoney-Payments/xmoney-ios.git", exact: "1.0.1")
+        .package(url: "https://github.com/xMoney-Payments/xmoney-ios.git", exact: "1.1.0")
     ],
     targets: [
         .target(

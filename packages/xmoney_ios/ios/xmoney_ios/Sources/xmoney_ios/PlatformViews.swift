@@ -32,6 +32,92 @@ final class PaymentElementViewFactory: NSObject, FlutterPlatformViewFactory {
     }
 }
 
+private struct OrderCreationRejected: Error {}
+
+/// Gates for the Dart `updateOrderWith` calls in flight on one surface.
+///
+/// A resolve or reject that arrives before `beginUpdateOrder` is kept until
+/// that call creates the gate. Finished request ids are capped so a long
+/// checkout cannot grow the set.
+@MainActor
+final class PendingOrders {
+    private var gates: [String: PendingOrderGate] = [:]
+    private var early: [String: Result<PaymentIntent, Error>] = [:]
+    private var finished = Set<String>()
+    private var finishedOrder: [String] = []
+
+    func isFinished(_ requestId: String) -> Bool {
+        finished.contains(requestId)
+    }
+
+    /// The gate for [requestId], applying any result that arrived early.
+    func begin(_ requestId: String) -> PendingOrderGate {
+        let gate = gates[requestId] ?? PendingOrderGate()
+        gates[requestId] = gate
+        if let result = early.removeValue(forKey: requestId) {
+            gate.finish(result)
+        }
+        return gate
+    }
+
+    /// Applies a Dart resolve or reject.
+    func settle(requestId: String, result: Result<PaymentIntent, Error>) {
+        if finished.contains(requestId) { return }
+        if let gate = gates[requestId] {
+            gate.finish(result)
+        } else {
+            early[requestId] = result
+        }
+    }
+
+    func close(_ requestId: String) {
+        gates[requestId] = nil
+        early[requestId] = nil
+        guard finished.insert(requestId).inserted else { return }
+        finishedOrder.append(requestId)
+        if finishedOrder.count > 32 {
+            finished.remove(finishedOrder.removeFirst())
+        }
+    }
+}
+
+/// Holds the intent Dart creates while native `updateOrder(createOrder:)` is locked.
+@MainActor
+final class PendingOrderGate {
+    private var continuation: CheckedContinuation<PaymentIntent, Error>?
+    private var result: Result<PaymentIntent, Error>?
+    private var finished = false
+
+    func awaitIntent() async throws -> PaymentIntent {
+        if let result {
+            return try result.get()
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if let result {
+                    continuation.resume(with: result)
+                    return
+                }
+                self.continuation = continuation
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.finish(.failure(CancellationError()))
+            }
+        }
+    }
+
+    func finish(_ result: Result<PaymentIntent, Error>) {
+        guard !finished else { return }
+        finished = true
+        self.result = result
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(with: result)
+        }
+    }
+}
+
 @MainActor
 final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
     private let container = UIView()
@@ -45,12 +131,13 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
     private var lastReportedHeight: CGFloat = -1
     private var lastOrderConsumed: Bool?
     private var lastInteractionEnabled: Bool?
-    /// `onReady` is sent once, after the form has finished its first layout.
+    /// `onReady` is sent once per mount, when the SDK reports the form has drawn.
     private var didSendReady = false
     private var keyboardObservers: [NSObjectProtocol] = []
     /// Off-screen until a keyboard notification arrives.
     private var keyboardFrameInWindow = CGRect(x: 0, y: 10_000, width: 0, height: 0)
     private var lastKeyboardReport = ""
+    private let orders = PendingOrders()
 
     init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger, args: [String: Any]) {
         elementChannel = FlutterMethodChannel(
@@ -95,6 +182,32 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
             orderPayload = args["orderPayload"] as? String ?? orderPayload
             orderChecksum = args["orderChecksum"] as? String ?? orderChecksum
             runUpdateOrder(result: result)
+        case "beginUpdateOrder":
+            guard let requestId = requestId(from: call) else {
+                result(nil)
+                return
+            }
+            beginUpdateOrder(requestId: requestId, result: result)
+        case "resolveOrder":
+            guard let requestId = requestId(from: call),
+                  let args = call.arguments as? [String: Any]
+            else {
+                result(nil)
+                return
+            }
+            let intent = BridgeConfigParser.parseIntent(
+                orderPayload: args["orderPayload"] as? String ?? "",
+                orderChecksum: args["orderChecksum"] as? String ?? ""
+            )
+            orders.settle(requestId: requestId, result: .success(intent))
+            result(nil)
+        case "rejectOrder":
+            guard let requestId = requestId(from: call) else {
+                result(nil)
+                return
+            }
+            orders.settle(requestId: requestId, result: .failure(OrderCreationRejected()))
+            result(nil)
         case "updateAppearance":
             guard let args = call.arguments as? [String: Any],
                   let appearance = args["appearance"] as? [String: Any]
@@ -193,13 +306,118 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     )
                 )
             } catch let error as PaymentError {
+                self.reportLoadFailureIfNeeded(
+                    code: bridgeErrorCode(error),
+                    message: error.merchantMessage()
+                )
                 result(
-                    FlutterError(code: error.code, message: error.merchantMessage(), details: nil)
+                    FlutterError(
+                        code: bridgeErrorCode(error),
+                        message: error.merchantMessage(),
+                        details: nil
+                    )
                 )
             } catch {
+                self.reportLoadFailureIfNeeded(code: "PRESENT_ERROR", message: "Failed to present")
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
+    }
+
+    private func requestId(from call: FlutterMethodCall) -> String? {
+        guard let args = call.arguments as? [String: Any],
+              let requestId = args["requestId"] as? String,
+              !requestId.isEmpty
+        else { return nil }
+        return requestId
+    }
+
+    private func beginUpdateOrder(requestId: String, result: @escaping FlutterResult) {
+        if orders.isFinished(requestId) {
+            result(
+                FlutterError(
+                    code: "SUPERSEDED_UPDATE_ORDER",
+                    message: "Superseded by a newer updateOrder call",
+                    details: nil
+                )
+            )
+            return
+        }
+        let gate = orders.begin(requestId)
+        guard let element else {
+            orders.close(requestId)
+            result(
+                FlutterError(code: "NOT_INITIALIZED", message: "Call init before present.", details: nil)
+            )
+            return
+        }
+        prepareTask?.cancel()
+        prepareTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.orders.close(requestId) }
+            guard !Task.isCancelled else {
+                result(self.supersededUpdateError())
+                return
+            }
+            do {
+                _ = try await element.updateOrder { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    self.emitAvailability()
+                    return try await gate.awaitIntent()
+                }
+                guard !Task.isCancelled else {
+                    result(self.supersededUpdateError())
+                    return
+                }
+                self.reportHeight()
+                self.emitAvailability()
+                result(nil)
+            } catch is CancellationError {
+                result(self.supersededUpdateError())
+            } catch is OrderCreationRejected {
+                result(
+                    FlutterError(
+                        code: "ORDER_CREATION_FAILED",
+                        message: "Order creation failed",
+                        details: nil
+                    )
+                )
+            } catch let error as PaymentError {
+                self.reportLoadFailureIfNeeded(
+                    code: bridgeErrorCode(error),
+                    message: error.merchantMessage()
+                )
+                result(
+                    FlutterError(
+                        code: bridgeErrorCode(error),
+                        message: error.merchantMessage(),
+                        details: nil
+                    )
+                )
+            } catch {
+                self.reportLoadFailureIfNeeded(code: "PRESENT_ERROR", message: "Failed to present")
+                result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
+            }
+        }
+    }
+
+    /// A failed update that cancelled the first load would otherwise leave the
+    /// merchant spinner up: Ready is not sent, and a first-bind failure is not
+    /// `onUpdateFailed`.
+    private func reportLoadFailureIfNeeded(code: String, message: String) {
+        guard !didSendReady else { return }
+        let encoded = jsonString(
+            from: BridgeResults.failedBody(code: code, message: message)
+        )
+        elementChannel.invokeMethod("onResult", arguments: ["result": encoded])
+    }
+
+    private func supersededUpdateError() -> FlutterError {
+        FlutterError(
+            code: "SUPERSEDED_UPDATE_ORDER",
+            message: "Superseded by a newer updateOrder call",
+            details: nil
+        )
     }
 
     private func rebuild(
@@ -224,18 +442,36 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
         self.payment = payment
         let view = PaymentElement(payment: payment) { [weak self] event in
             guard let self else { return }
-            // The SDK emits `.ready` when bind finishes, before the form is
-            // laid out. Flutter is told from `publishReady` after that layout.
-            guard case let .processing(isProcessing) = event else { return }
-            let body: [String: Any] = [
-                "type": "onProcessing",
-                "isProcessing": isProcessing,
-            ]
-            Task { @MainActor in
-                self.elementChannel.invokeMethod(
-                    "onEvent",
-                    arguments: ["event": jsonString(from: body)]
-                )
+            switch event {
+            case .ready:
+                Task { @MainActor in
+                    self.reportHeight()
+                    self.publishReady()
+                }
+            case let .processing(isProcessing):
+                let body: [String: Any] = [
+                    "type": "onProcessing",
+                    "isProcessing": isProcessing,
+                ]
+                Task { @MainActor in
+                    self.elementChannel.invokeMethod(
+                        "onEvent",
+                        arguments: ["event": jsonString(from: body)]
+                    )
+                }
+            case let .updateFailed(error):
+                let body: [String: Any] = [
+                    "type": "onUpdateFailed",
+                    "code": error.code,
+                    "message": error.merchantMessage(),
+                ]
+                Task { @MainActor in
+                    self.elementChannel.invokeMethod(
+                        "onEvent",
+                        arguments: ["event": jsonString(from: body)]
+                    )
+                    self.emitAvailability()
+                }
             }
         }
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -260,23 +496,13 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
             do {
                 try await view.prepare(intent: intent)
                 guard !Task.isCancelled else { return }
-                // The form measures itself on the next turn (`applySelection`).
-                // That block is already queued, so resuming after one main-queue
-                // turn means the laid-out height is in place before Flutter
-                // drops the skeleton.
-                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.main.async {
-                        continuation.resume()
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                view.layoutIfNeeded()
                 self.reportHeight()
-                self.publishReady()
+            } catch is CancellationError {
+                return
             } catch let error as PaymentError {
                 let encoded = jsonString(
                     from: BridgeResults.failedBody(
-                        code: error.code,
+                        code: bridgeErrorCode(error),
                         message: error.merchantMessage()
                     )
                 )
@@ -440,7 +666,17 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     private var appearanceMap: [String: Any]?
     private var disabled = false
     private var updateTask: Task<Void, Never>?
+    /// Binds the mount order. Cancelled when a Dart update replaces it.
+    private var mountTask: Task<Void, Never>?
     private var lastAvailabilityKey: String?
+    /// `onReady` is sent once, after the mount order is bound and the button has drawn.
+    private var didSendReady = false
+    /// True after the button has drawn. Ready waits for this and a bound order.
+    private var buttonDrawn = false
+    /// True after an order has been bound. A later bind failure emits
+    /// `onUpdateFailed` instead of a payment result.
+    private var hasBoundOrder = false
+    private let orders = PendingOrders()
 
     init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger, args: [String: Any]) {
         buttonChannel = FlutterMethodChannel(
@@ -467,6 +703,12 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             button.topAnchor.constraint(equalTo: container.topAnchor),
             button.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        button.onFirstDraw = { [weak self] in
+            Task { @MainActor in
+                self?.buttonDrawn = true
+                self?.publishButtonReady()
+            }
+        }
         buttonChannel.setMethodCallHandler { [weak self] call, result in
             Task { @MainActor in
                 self?.handle(call, result: result)
@@ -476,6 +718,11 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     }
 
     func view() -> UIView { container }
+
+    deinit {
+        updateTask?.cancel()
+        mountTask?.cancel()
+    }
 
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
@@ -487,6 +734,32 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             orderPayload = args["orderPayload"] as? String ?? orderPayload
             orderChecksum = args["orderChecksum"] as? String ?? orderChecksum
             runUpdateOrder(result: result)
+        case "beginUpdateOrder":
+            guard let requestId = requestId(from: call) else {
+                result(nil)
+                return
+            }
+            beginUpdateOrder(requestId: requestId, result: result)
+        case "resolveOrder":
+            guard let requestId = requestId(from: call),
+                  let args = call.arguments as? [String: Any]
+            else {
+                result(nil)
+                return
+            }
+            let intent = BridgeConfigParser.parseIntent(
+                orderPayload: args["orderPayload"] as? String ?? "",
+                orderChecksum: args["orderChecksum"] as? String ?? ""
+            )
+            orders.settle(requestId: requestId, result: .success(intent))
+            result(nil)
+        case "rejectOrder":
+            guard let requestId = requestId(from: call) else {
+                result(nil)
+                return
+            }
+            orders.settle(requestId: requestId, result: .failure(OrderCreationRejected()))
+            result(nil)
         case "updateAppearance":
             guard let map = call.arguments as? [String: Any] else {
                 result(nil)
@@ -500,12 +773,27 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 result(nil)
                 return
             }
-            configurationMap = args["configuration"] as? [String: Any] ?? configurationMap
+            let nextConfiguration = args["configuration"] as? [String: Any] ?? configurationMap
+            let configurationChanged = !NSDictionary(dictionary: nextConfiguration)
+                .isEqual(to: configurationMap)
+            configurationMap = nextConfiguration
             orderPayload = args["orderPayload"] as? String ?? orderPayload
             orderChecksum = args["orderChecksum"] as? String ?? orderChecksum
             appearanceMap = args["appearance"] as? [String: Any] ?? appearanceMap
             disabled = !(args["isEnabled"] as? Bool ?? true)
-            bind()
+            // Rebuilding the wallet rebinds the order and sends Ready again,
+            // so only a new configuration does it.
+            if configurationChanged {
+                bind()
+            } else {
+                if let wallet = appearanceMap != nil
+                    ? BridgeConfigParser.parseWalletAppearance(appearanceMap)
+                    : paymentConfig?.paymentMethods.applePay.appearance {
+                    button.apply(appearance: wallet)
+                }
+                syncEnabled()
+                emitAvailability()
+            }
             result(nil)
         default:
             result(FlutterMethodNotImplemented)
@@ -513,6 +801,8 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     }
 
     private func bind() {
+        didSendReady = false
+        hasBoundOrder = false
         paymentConfig = BridgeConfigParser.parseConfig(dict: configurationMap)
         intent = BridgeConfigParser.parseIntent(
             orderPayload: orderPayload,
@@ -523,7 +813,6 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             ? BridgeConfigParser.parseWalletAppearance(appearanceMap)
             : paymentConfig.paymentMethods.applePay.appearance
         button.apply(appearance: wallet)
-        syncEnabled()
         ApplePay.register()
         applePay = ApplePay(configuration: paymentConfig) { [weak self] paymentResult in
             let encoded = jsonString(from: BridgeResults.resultBody(paymentResult))
@@ -532,7 +821,40 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 self?.emitAvailability()
             }
         }
-        buttonChannel.invokeMethod("onEvent", arguments: ["event": jsonString(from: ["type": "onReady"])])
+        // Locked until the mount order is bound, matching the native samples.
+        syncEnabled()
+        emitAvailability()
+        mountTask?.cancel()
+        guard let applePay else { return }
+        mountTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            do {
+                try await applePay.updateOrder(intent: intent)
+                guard !Task.isCancelled else { return }
+                self.hasBoundOrder = true
+                self.syncEnabled()
+                self.emitAvailability()
+                self.publishButtonReady()
+            } catch is CancellationError {
+                // A Dart update replaced this bind.
+            } catch let error as PaymentError {
+                guard error != .paymentInProgress else { return }
+                self.reportUpdateFailure(error)
+            } catch {
+                self.reportMountFailure(code: "PRESENT_ERROR", message: "Failed to present")
+            }
+        }
+    }
+
+    /// Tells Flutter the button is ready. Once, after the mount order is bound
+    /// and the PassKit button has drawn.
+    private func publishButtonReady() {
+        guard hasBoundOrder, buttonDrawn, !didSendReady else { return }
+        didSendReady = true
+        buttonChannel.invokeMethod(
+            "onEvent",
+            arguments: ["event": jsonString(from: ["type": "onReady"])]
+        )
         emitAvailability()
     }
 
@@ -548,20 +870,20 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             orderChecksum: orderChecksum
         )
         updateTask?.cancel()
+        mountTask?.cancel()
         button.isEnabled = false
-        emitProcessing(true)
+        emitAvailability()
         updateTask = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled else { return }
             do {
                 try await applePay.updateOrder(intent: nextIntent)
                 self.intent = nextIntent
+                self.hasBoundOrder = true
                 self.syncEnabled()
-                self.emitProcessing(false)
                 self.emitAvailability()
                 result(nil)
             } catch is CancellationError {
                 self.syncEnabled()
-                self.emitProcessing(false)
                 self.emitAvailability()
                 result(
                     FlutterError(
@@ -572,22 +894,134 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 )
             } catch let error as PaymentError {
                 self.syncEnabled()
-                self.emitProcessing(false)
                 self.emitAvailability()
-                let encoded = jsonString(
-                    from: BridgeResults.failedBody(
-                        code: error.code,
-                        message: error.merchantMessage()
+                self.reportUpdateFailure(error)
+                result(
+                    FlutterError(
+                        code: bridgeErrorCode(error),
+                        message: error.merchantMessage(),
+                        details: nil
                     )
                 )
-                self.buttonChannel.invokeMethod("onResult", arguments: ["result": encoded])
-                result(FlutterError(code: error.code, message: error.merchantMessage(), details: nil))
             } catch {
                 self.syncEnabled()
-                self.emitProcessing(false)
+                self.emitAvailability()
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
+    }
+
+    private func beginUpdateOrder(requestId: String, result: @escaping FlutterResult) {
+        if orders.isFinished(requestId) {
+            result(supersededUpdateError())
+            return
+        }
+        let gate = orders.begin(requestId)
+        guard let applePay else {
+            orders.close(requestId)
+            result(
+                FlutterError(code: "NOT_INITIALIZED", message: "Call init before present.", details: nil)
+            )
+            return
+        }
+        updateTask?.cancel()
+        mountTask?.cancel()
+        button.isEnabled = false
+        emitAvailability()
+        updateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.orders.close(requestId) }
+            guard !Task.isCancelled else {
+                result(self.supersededUpdateError())
+                return
+            }
+            do {
+                let bound = try await applePay.updateOrder { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    self.emitAvailability()
+                    return try await gate.awaitIntent()
+                }
+                guard !Task.isCancelled else {
+                    result(self.supersededUpdateError())
+                    return
+                }
+                self.intent = bound
+                self.hasBoundOrder = true
+                self.syncEnabled()
+                self.emitAvailability()
+                result(nil)
+            } catch is CancellationError {
+                self.syncEnabled()
+                self.emitAvailability()
+                result(self.supersededUpdateError())
+            } catch is OrderCreationRejected {
+                self.syncEnabled()
+                self.emitAvailability()
+                result(
+                    FlutterError(
+                        code: "ORDER_CREATION_FAILED",
+                        message: "Order creation failed",
+                        details: nil
+                    )
+                )
+            } catch let error as PaymentError {
+                self.syncEnabled()
+                self.emitAvailability()
+                self.reportUpdateFailure(error)
+                result(
+                    FlutterError(
+                        code: bridgeErrorCode(error),
+                        message: error.merchantMessage(),
+                        details: nil
+                    )
+                )
+            } catch {
+                self.syncEnabled()
+                self.emitAvailability()
+                result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
+            }
+        }
+    }
+
+    private func requestId(from call: FlutterMethodCall) -> String? {
+        guard let args = call.arguments as? [String: Any],
+              let requestId = args["requestId"] as? String,
+              !requestId.isEmpty
+        else { return nil }
+        return requestId
+    }
+
+    private func supersededUpdateError() -> FlutterError {
+        FlutterError(
+            code: "SUPERSEDED_UPDATE_ORDER",
+            message: "Superseded by a newer updateOrder call",
+            details: nil
+        )
+    }
+
+    /// Same split as native: a charge in progress is neither, the first bind
+    /// is a payment result, and a later bind is update-failed.
+    private func reportUpdateFailure(_ error: PaymentError) {
+        guard error != .paymentInProgress else { return }
+        if hasBoundOrder {
+            let body: [String: Any] = [
+                "type": "onUpdateFailed",
+                "code": error.code,
+                "message": error.merchantMessage(),
+            ]
+            buttonChannel.invokeMethod(
+                "onEvent",
+                arguments: ["event": jsonString(from: body)]
+            )
+        } else {
+            reportMountFailure(code: bridgeErrorCode(error), message: error.merchantMessage())
+        }
+    }
+
+    /// A failed mount bind never sends Ready, so it ends the merchant loader.
+    private func reportMountFailure(code: String, message: String) {
+        let encoded = jsonString(from: BridgeResults.failedBody(code: code, message: message))
+        buttonChannel.invokeMethod("onResult", arguments: ["result": encoded])
     }
 
     private func syncEnabled() {
@@ -595,7 +1029,8 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     }
 
     private func presentApplePay() {
-        guard !disabled, let applePay, let intent, applePay.isInteractionEnabled else { return }
+        guard !disabled, hasBoundOrder, let applePay, let intent,
+              applePay.isInteractionEnabled else { return }
         guard let presenter = XMoneyHostController.topViewControllerForPlatformView() else {
             let encoded = jsonString(
                 from: BridgeResults.failedBody(
@@ -623,14 +1058,6 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 self.emitAvailability()
             }
         }
-    }
-
-    private func emitProcessing(_ isProcessing: Bool) {
-        let body: [String: Any] = ["type": "onProcessing", "isProcessing": isProcessing]
-        buttonChannel.invokeMethod(
-            "onEvent",
-            arguments: ["event": jsonString(from: body)]
-        )
     }
 
     private func emitAvailability() {

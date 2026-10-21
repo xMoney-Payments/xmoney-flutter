@@ -13,6 +13,10 @@ enum BridgeJson {
     }
 }
 
+func bridgeErrorCode(_ error: PaymentError) -> String {
+    error == .paymentInProgress ? "PAYMENT_IN_PROGRESS" : error.code
+}
+
 enum BridgeResults {
     static func resultBody(_ result: PaymentResult) -> [String: Any] {
         switch result {

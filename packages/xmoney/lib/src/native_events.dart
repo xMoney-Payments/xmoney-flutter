@@ -10,6 +10,12 @@ PaymentSheetEvent? mapNativeBridgeEvent(Map<String, dynamic> event) {
   if (type == 'onProcessing' || type == 'processing') {
     return PaymentSheetProcessingEvent(event['isProcessing'] as bool? ?? true);
   }
+  if (type == 'onUpdateFailed' || type == 'updateFailed') {
+    return PaymentSheetUpdateFailedEvent(
+      code: event['code'] as String? ?? 'PRESENT_ERROR',
+      message: event['message'] as String? ?? 'Failed to present',
+    );
+  }
   return null;
 }
 
@@ -18,6 +24,8 @@ WalletPayEvent? walletPayEventFromSheet(PaymentSheetEvent event) {
     PaymentSheetReadyEvent() => const WalletPayReadyEvent(),
     PaymentSheetProcessingEvent(:final isProcessing) =>
       WalletPayProcessingEvent(isProcessing),
+    PaymentSheetUpdateFailedEvent(:final code, :final message) =>
+      WalletPayUpdateFailedEvent(code: code, message: message),
   };
 }
 

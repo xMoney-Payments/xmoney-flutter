@@ -43,6 +43,7 @@ internal class PaymentElementPlatformView(
     private val frame = FrameLayout(context)
     private val composeView = ComposeView(context)
     private var controllerRef: EmbeddedPaymentController? = null
+    private val orders = PendingOrders()
     private var configuration: Map<String, Any?>? =
         params["configuration"] as? Map<String, Any?>
     private var orderPayload: String = params["orderPayload"] as? String ?: ""
@@ -183,21 +184,22 @@ internal class PaymentElementPlatformView(
                         },
                     onEvent = { event ->
                         when (event) {
-                            EmbeddedEvent.Ready -> {
-                                // Ready fires when bind finishes, while the loader
-                                // is still the composed child. Post twice so the
-                                // form has been laid out before the skeleton hides.
-                                composeView.post {
-                                    composeView.post {
-                                        publishReady(controller)
-                                    }
-                                }
-                            }
+                            EmbeddedEvent.Ready -> publishReady(controller)
                             is EmbeddedEvent.Processing -> {
                                 emitEvent(
                                     mapOf(
                                         "type" to "onProcessing",
                                         "isProcessing" to event.isProcessing,
+                                    ),
+                                )
+                                emitAvailabilityIfChanged(controller)
+                            }
+                            is EmbeddedEvent.UpdateFailed -> {
+                                emitEvent(
+                                    mapOf(
+                                        "type" to "onUpdateFailed",
+                                        "code" to event.error.code,
+                                        "message" to event.error.merchantMessage(),
                                     ),
                                 )
                                 emitAvailabilityIfChanged(controller)
@@ -247,6 +249,23 @@ internal class PaymentElementPlatformView(
                 orderChecksum = args?.get("orderChecksum") as? String ?: orderChecksum
                 updateOrder(result)
             }
+            "beginUpdateOrder" -> beginUpdateOrder(requestId(call), result)
+            "resolveOrder" -> {
+                val requestId = requestId(call)
+                val args = call.arguments as? Map<*, *>
+                orders.settle(
+                    requestId,
+                    BridgeConfigParser.parseIntent(
+                        args?.get("orderPayload") as? String ?: "",
+                        args?.get("orderChecksum") as? String ?: "",
+                    ),
+                )
+                result.success(null)
+            }
+            "rejectOrder" -> {
+                orders.settleRejected(requestId(call))
+                result.success(null)
+            }
             "updateAppearance" -> {
                 @Suppress("UNCHECKED_CAST")
                 val args = call.arguments as? Map<String, Any?>
@@ -293,6 +312,48 @@ internal class PaymentElementPlatformView(
         }
     }
 
+    private fun requestId(call: MethodCall): String {
+        return (call.arguments as? Map<*, *>)?.get("requestId") as? String ?: ""
+    }
+
+    /// Locks Pay, then waits for Dart to resolve or reject the order it creates.
+    private fun beginUpdateOrder(requestId: String, result: MethodChannel.Result) {
+        val deferred = orders.gate(requestId)
+        val controller = controllerRef
+        val hostActivity = activityProvider()
+        if (deferred == null || controller == null || hostActivity == null) {
+            orders.close(requestId)
+            result.error("NOT_INITIALIZED", "Call init before present.", null)
+            return
+        }
+        hostActivity.lifecycleScope.launch {
+            try {
+                controller.updateOrder {
+                    emitAvailabilityIfChanged(controller)
+                    deferred.await()
+                }
+                emitAvailabilityIfChanged(controller)
+                result.success(null)
+            } catch (_: OrderCreationRejected) {
+                result.error("ORDER_CREATION_FAILED", "Order creation failed", null)
+            } catch (_: CancellationException) {
+                result.error(
+                    "SUPERSEDED_UPDATE_ORDER",
+                    "Superseded by a newer updateOrder call",
+                    null,
+                )
+            } catch (error: PaymentError.PaymentInProgress) {
+                result.error("PAYMENT_IN_PROGRESS", error.merchantMessage(), null)
+            } catch (error: PaymentError) {
+                result.error(error.code, error.merchantMessage(), null)
+            } catch (_: Exception) {
+                result.error("PRESENT_ERROR", "Failed to present", null)
+            } finally {
+                orders.close(requestId)
+            }
+        }
+    }
+
     private fun updateOrder(result: MethodChannel.Result) {
         val controller = controllerRef
         val hostActivity = activityProvider()
@@ -308,11 +369,12 @@ internal class PaymentElementPlatformView(
                 result.success(null)
             } catch (error: CancellationException) {
                 result.error("SUPERSEDED_UPDATE_ORDER", "Superseded by a newer updateOrder call", null)
+            } catch (error: PaymentError.PaymentInProgress) {
+                result.error("PAYMENT_IN_PROGRESS", error.merchantMessage(), null)
+            } catch (error: PaymentError) {
+                result.error(error.code, error.merchantMessage(), null)
             } catch (error: Exception) {
-                val code = if (error is PaymentError) error.code else "PRESENT_ERROR"
-                val message =
-                    if (error is PaymentError) error.merchantMessage() else "Failed to present"
-                result.error(code, message, null)
+                result.error("PRESENT_ERROR", "Failed to present", null)
             }
         }
     }
@@ -332,6 +394,7 @@ internal class PaymentElementPlatformView(
     override fun getView(): View = frame
 
     override fun dispose() {
+        orders.cancelAll()
         trackingFocus = false
         val observer = frame.viewTreeObserver
         if (observer.isAlive) {

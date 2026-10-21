@@ -1,6 +1,6 @@
 name: xmoney_ios
 description: iOS implementation of the federated xMoney Flutter payments SDK.
-version: 0.0.2
+version: 0.0.3
 homepage: https://xmoney.com
 repository: https://github.com/xMoney-Payments/xmoney-flutter
 issue_tracker: https://github.com/xMoney-Payments/xmoney-flutter/issues
@@ -15,7 +15,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  xmoney_platform_interface: ^0.0.2
+  xmoney_platform_interface: ^0.0.3
 
 dev_dependencies:
   flutter_test:
