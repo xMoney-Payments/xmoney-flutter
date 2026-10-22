@@ -355,7 +355,7 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                 return
             }
             do {
-                _ = try await element.updateOrder { [weak self] in
+                let bound = try await element.updateOrder { [weak self] in
                     guard let self else { throw CancellationError() }
                     self.emitAvailability()
                     return try await gate.awaitIntent()
@@ -364,6 +364,9 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     result(self.supersededUpdateError())
                     return
                 }
+                // A later rebind before Ready must use this order, not the mount order.
+                self.orderPayload = bound.orderPayload
+                self.orderChecksum = bound.orderChecksum
                 self.reportHeight()
                 self.emitAvailability()
                 result(nil)

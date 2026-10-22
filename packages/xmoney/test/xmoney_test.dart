@@ -13,6 +13,8 @@ import 'package:xmoney/src/native_events.dart';
 import 'package:xmoney/src/parse_result.dart';
 import 'package:xmoney/src/present_session.dart';
 import 'package:xmoney/src/widgets/payment_element.dart' as payment_element;
+import 'package:xmoney/src/widgets/wallet_pay_button.dart'
+    show WalletPayButtonControllerTestHooks;
 import 'package:xmoney/src/widgets/wallet_pay_button.dart' as wallet_pay;
 
 /// The order-update methods both controllers share.

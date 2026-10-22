@@ -4,7 +4,12 @@ export 'src/payment_sheet.dart';
 export 'src/payment_sheet_controller.dart';
 export 'src/errors.dart' show XMoneyPaymentError;
 export 'src/widgets/payment_element.dart'
-    hide attachPaymentElementControllerForTest;
+    hide
+        attachPaymentElementControllerForTest,
+        markPaymentElementPlatformViewCreatedForTest;
 export 'src/widgets/wallet_pay_button.dart'
-    hide attachWalletPayButtonControllerForTest;
+    hide
+        attachWalletPayButtonControllerForTest,
+        markWalletPlatformViewCreatedForTest,
+        WalletPayButtonControllerTestHooks;
 export 'package:xmoney_platform_interface/src/models/payment_models.dart';

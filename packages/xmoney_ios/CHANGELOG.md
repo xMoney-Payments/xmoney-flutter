@@ -22,6 +22,7 @@ First stable release.
 ### Fixed
 
 - A rejected `updateOrderWith` before Ready rebinds the mount order on Payment Element and Apple Pay, then sends ready.
+- Payment Element keeps the order a successful `updateOrderWith` bound, so a later rejected update before Ready no longer rebinds the original mount order.
 - Appearance-only Apple Pay updates no longer tear down the button.
 - Passing an order the view already sent no longer binds it again.
 - The Apple Pay button binds its mount order, so a failed cart update locks the button instead of charging the previous order.

@@ -486,6 +486,28 @@ void markWalletPlatformViewCreatedForTest(Element element) {
   }
 }
 
+/// Test-only access to [WalletPayButtonController] internals.
+///
+/// Not exported from `package:xmoney/xmoney.dart`, so it is not public API.
+extension WalletPayButtonControllerTestHooks on WalletPayButtonController {
+  /// The checksum of the last order handed to the native SDK.
+  @visibleForTesting
+  String? get sentChecksumForTest => _orders.sentChecksumForTest;
+
+  /// What [ApplePayButton] and [GooglePayButton] call from `didUpdateWidget`.
+  @visibleForTesting
+  void relayWidgetIntentForTest(PaymentIntent intent) =>
+      _relayWidgetIntent(intent);
+
+  /// What the buttons call when a charge ends.
+  @visibleForTesting
+  void retryDeferredForTest() => _retryDeferredIntent();
+
+  /// Drops the controller the way the widget does on dispose.
+  @visibleForTesting
+  void detachForTest() => _detach();
+}
+
 /// Updates the order or appearance of a mounted [ApplePayButton] or [GooglePayButton].
 class WalletPayButtonController {
   final OrderUpdater _orders = OrderUpdater();
@@ -505,23 +527,6 @@ class WalletPayButtonController {
   void _rebuildFromWidget() => _orders.forgetAndSupersede();
 
   void _retryDeferredIntent() => _orders.retryDeferred();
-
-  /// The checksum of the last order handed to the native SDK.
-  @visibleForTesting
-  String? get sentChecksumForTest => _orders.sentChecksumForTest;
-
-  /// What [ApplePayButton] and [GooglePayButton] call from `didUpdateWidget`.
-  @visibleForTesting
-  void relayWidgetIntentForTest(PaymentIntent intent) =>
-      _relayWidgetIntent(intent);
-
-  /// What the buttons call when a charge ends.
-  @visibleForTesting
-  void retryDeferredForTest() => _retryDeferredIntent();
-
-  /// Drops the controller the way the widget does on dispose.
-  @visibleForTesting
-  void detachForTest() => _detach();
 
   /// Rebinds [intent] on the mounted wallet button.
   ///

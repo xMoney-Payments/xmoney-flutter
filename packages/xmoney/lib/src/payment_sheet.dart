@@ -53,9 +53,3 @@ abstract final class PaymentSheet {
   /// Closes an idle sheet. Waits when a charge is in flight; idle close still cancels.
   static void dismiss() => XMoneyPlatform.instance.dismissPaymentSheet();
 }
-
-/// Clears in-memory sheet session state. For tests.
-void resetPaymentSheetStateForTest() => _sheetSession.reset();
-
-/// Marks the current sheet session as processing. For tests.
-void markPaymentSheetProcessingForTest() => _sheetSession.isProcessing = true;
