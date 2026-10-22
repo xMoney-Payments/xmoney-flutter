@@ -306,10 +306,6 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     )
                 )
             } catch let error as PaymentError {
-                self.reportLoadFailureIfNeeded(
-                    code: bridgeErrorCode(error),
-                    message: error.merchantMessage()
-                )
                 result(
                     FlutterError(
                         code: bridgeErrorCode(error),
@@ -318,7 +314,6 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     )
                 )
             } catch {
-                self.reportLoadFailureIfNeeded(code: "PRESENT_ERROR", message: "Failed to present")
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
@@ -375,6 +370,9 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
             } catch is CancellationError {
                 result(self.supersededUpdateError())
             } catch is OrderCreationRejected {
+                if !self.didSendReady {
+                    self.rebindMountOrder()
+                }
                 result(
                     FlutterError(
                         code: "ORDER_CREATION_FAILED",
@@ -383,10 +381,6 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     )
                 )
             } catch let error as PaymentError {
-                self.reportLoadFailureIfNeeded(
-                    code: bridgeErrorCode(error),
-                    message: error.merchantMessage()
-                )
                 result(
                     FlutterError(
                         code: bridgeErrorCode(error),
@@ -395,21 +389,33 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                     )
                 )
             } catch {
-                self.reportLoadFailureIfNeeded(code: "PRESENT_ERROR", message: "Failed to present")
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
     }
 
-    /// A failed update that cancelled the first load would otherwise leave the
-    /// merchant spinner up: Ready is not sent, and a first-bind failure is not
-    /// `onUpdateFailed`.
-    private func reportLoadFailureIfNeeded(code: String, message: String) {
-        guard !didSendReady else { return }
-        let encoded = jsonString(
-            from: BridgeResults.failedBody(code: code, message: message)
+    /// The first bind was cancelled before Ready. Bind the mount order again so
+    /// the element can draw and send Ready. A failure here is a load failure.
+    private func rebindMountOrder() {
+        guard let element else { return }
+        let intent = BridgeConfigParser.parseIntent(
+            orderPayload: orderPayload,
+            orderChecksum: orderChecksum
         )
-        elementChannel.invokeMethod("onResult", arguments: ["result": encoded])
+        prepareTask?.cancel()
+        prepareTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            do {
+                try await element.updateOrder(intent: intent)
+                guard !Task.isCancelled else { return }
+                self.reportHeight()
+                self.emitAvailability()
+            } catch is CancellationError {
+                return
+            } catch {
+                // The native element reports a failed first bind through onResult.
+            }
+        }
     }
 
     private func supersededUpdateError() -> FlutterError {
@@ -499,19 +505,8 @@ final class PaymentElementPlatformView: NSObject, FlutterPlatformView {
                 self.reportHeight()
             } catch is CancellationError {
                 return
-            } catch let error as PaymentError {
-                let encoded = jsonString(
-                    from: BridgeResults.failedBody(
-                        code: bridgeErrorCode(error),
-                        message: error.merchantMessage()
-                    )
-                )
-                self.elementChannel.invokeMethod("onResult", arguments: ["result": encoded])
             } catch {
-                let encoded = jsonString(
-                    from: BridgeResults.failedBody(code: "LOAD_ERROR", message: "Failed to load")
-                )
-                self.elementChannel.invokeMethod("onResult", arguments: ["result": encoded])
+                // The native element reports a failed first bind through onResult.
             }
         }
     }
@@ -676,6 +671,8 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     /// True after an order has been bound. A later bind failure emits
     /// `onUpdateFailed` instead of a payment result.
     private var hasBoundOrder = false
+    /// A failed mount is reported once, until the next [bind] creates a new session.
+    private var didReportMountFailure = false
     private let orders = PendingOrders()
 
     init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger, args: [String: Any]) {
@@ -803,12 +800,13 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     private func bind() {
         didSendReady = false
         hasBoundOrder = false
+        didReportMountFailure = false
         paymentConfig = BridgeConfigParser.parseConfig(dict: configurationMap)
         intent = BridgeConfigParser.parseIntent(
             orderPayload: orderPayload,
             orderChecksum: orderChecksum
         )
-        guard let paymentConfig, let intent else { return }
+        guard let paymentConfig, intent != nil else { return }
         let wallet = appearanceMap != nil
             ? BridgeConfigParser.parseWalletAppearance(appearanceMap)
             : paymentConfig.paymentMethods.applePay.appearance
@@ -824,13 +822,24 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
         // Locked until the mount order is bound, matching the native samples.
         syncEnabled()
         emitAvailability()
+        bindMountOrder()
+    }
+
+    /// Binds the order stored in `orderPayload` and sends Ready once the button
+    /// has drawn. `bind` and a rejected `updateOrderWith` before Ready share this.
+    private func bindMountOrder() {
+        let nextIntent = BridgeConfigParser.parseIntent(
+            orderPayload: orderPayload,
+            orderChecksum: orderChecksum
+        )
         mountTask?.cancel()
         guard let applePay else { return }
         mountTask = Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled else { return }
             do {
-                try await applePay.updateOrder(intent: intent)
+                try await applePay.updateOrder(intent: nextIntent)
                 guard !Task.isCancelled else { return }
+                self.intent = nextIntent
                 self.hasBoundOrder = true
                 self.syncEnabled()
                 self.emitAvailability()
@@ -844,6 +853,13 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 self.reportMountFailure(code: "PRESENT_ERROR", message: "Failed to present")
             }
         }
+    }
+
+    /// Nothing is bound yet, so bind the mount order again instead of leaving
+    /// the merchant loader up.
+    private func rebindMountOrder() {
+        button.isEnabled = false
+        bindMountOrder()
     }
 
     /// Tells Flutter the button is ready. Once, after the mount order is bound
@@ -881,6 +897,7 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 self.hasBoundOrder = true
                 self.syncEnabled()
                 self.emitAvailability()
+                self.publishButtonReady()
                 result(nil)
             } catch is CancellationError {
                 self.syncEnabled()
@@ -906,6 +923,9 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             } catch {
                 self.syncEnabled()
                 self.emitAvailability()
+                if !self.hasBoundOrder {
+                    self.reportMountFailure(code: "PRESENT_ERROR", message: "Failed to present")
+                }
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
@@ -949,13 +969,18 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
                 self.hasBoundOrder = true
                 self.syncEnabled()
                 self.emitAvailability()
+                self.publishButtonReady()
                 result(nil)
             } catch is CancellationError {
                 self.syncEnabled()
                 self.emitAvailability()
                 result(self.supersededUpdateError())
             } catch is OrderCreationRejected {
-                self.syncEnabled()
+                if !self.hasBoundOrder {
+                    self.rebindMountOrder()
+                } else {
+                    self.syncEnabled()
+                }
                 self.emitAvailability()
                 result(
                     FlutterError(
@@ -978,6 +1003,9 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
             } catch {
                 self.syncEnabled()
                 self.emitAvailability()
+                if !self.hasBoundOrder {
+                    self.reportMountFailure(code: "PRESENT_ERROR", message: "Failed to present")
+                }
                 result(FlutterError(code: "PRESENT_ERROR", message: "Failed to present", details: nil))
             }
         }
@@ -1019,7 +1047,10 @@ final class ApplePayButtonPlatformView: NSObject, FlutterPlatformView {
     }
 
     /// A failed mount bind never sends Ready, so it ends the merchant loader.
+    /// Once per session, matching the native controller's first-failure report.
     private func reportMountFailure(code: String, message: String) {
+        guard !didReportMountFailure else { return }
+        didReportMountFailure = true
         let encoded = jsonString(from: BridgeResults.failedBody(code: code, message: message))
         buttonChannel.invokeMethod("onResult", arguments: ["result": encoded])
     }

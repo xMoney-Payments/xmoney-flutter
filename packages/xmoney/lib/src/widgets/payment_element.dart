@@ -110,6 +110,12 @@ class _PaymentElementState extends State<PaymentElement>
     with WidgetsBindingObserver {
   PaymentElementController? _controller;
   MethodChannel? _channel;
+
+  /// Intent and configuration passed in the platform view's creation params.
+  /// Later builds keep them so a view created before [didUpdateWidget] still
+  /// matches this snapshot.
+  PaymentIntent? _createdIntent;
+  PaymentConfig? _createdConfiguration;
   AndroidViewController? _androidViewController;
   TextDirection? _layoutDirection;
   late final String _chvId;
@@ -168,6 +174,7 @@ class _PaymentElementState extends State<PaymentElement>
   @override
   void didUpdateWidget(covariant PaymentElement oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_channel == null) return;
     final intentChanged =
         oldWidget.intent.orderChecksum != widget.intent.orderChecksum ||
         oldWidget.intent.orderPayload != widget.intent.orderPayload;
@@ -194,6 +201,22 @@ class _PaymentElementState extends State<PaymentElement>
     _channel = channel;
     _controller!._attach(channel, () => mounted);
     channel.setMethodCallHandler(_onPlatformCall);
+    final createdConfig = _createdConfiguration;
+    if (createdConfig != null &&
+        !_configEquivalent(createdConfig, widget.configuration)) {
+      _controller!._updateFromWidget(
+        widget.configuration,
+        widget.intent,
+        _chvId,
+      );
+      return;
+    }
+    final created = _createdIntent;
+    if (created != null &&
+        (created.orderChecksum != widget.intent.orderChecksum ||
+            created.orderPayload != widget.intent.orderPayload)) {
+      _controller!._relayWidgetIntent(widget.intent);
+    }
   }
 
   @override
@@ -218,6 +241,7 @@ class _PaymentElementState extends State<PaymentElement>
               widget.onEvent?.call(const PaymentElementReadyEvent());
             case PaymentSheetProcessingEvent(:final isProcessing):
               widget.onEvent?.call(PaymentElementProcessingEvent(isProcessing));
+              if (!isProcessing) _controller?._retryDeferredIntent();
             case PaymentSheetUpdateFailedEvent(:final code, :final message):
               widget.onEvent?.call(
                 PaymentElementUpdateFailedEvent(code: code, message: message),
@@ -356,10 +380,15 @@ class _PaymentElementState extends State<PaymentElement>
   }
 
   Map<String, dynamic> _creationParams() {
+    if (_createdIntent == null) {
+      _createdIntent = widget.intent;
+      _createdConfiguration = widget.configuration;
+    }
+    final intent = _createdIntent!;
     return {
-      'configuration': toNativeConfiguration(widget.configuration, _chvId),
-      'orderPayload': widget.intent.orderPayload,
-      'orderChecksum': widget.intent.orderChecksum,
+      'configuration': toNativeConfiguration(_createdConfiguration!, _chvId),
+      'orderPayload': intent.orderPayload,
+      'orderChecksum': intent.orderChecksum,
     };
   }
 
@@ -433,6 +462,15 @@ void attachPaymentElementControllerForTest(
   controller._attach(channel, () => true);
 }
 
+/// Lets widget tests drive [PaymentElement.didUpdateWidget]. The platform
+/// view is never created under the test binding, so an intent change would
+/// otherwise be skipped.
+@visibleForTesting
+void markPaymentElementPlatformViewCreatedForTest(Element element) {
+  final state = (element as StatefulElement).state as _PaymentElementState;
+  state._channel ??= const MethodChannel('xmoney/payment_element/test');
+}
+
 /// Controls an embedded [PaymentElement].
 class PaymentElementController {
   final OrderUpdater _orders = OrderUpdater();
@@ -448,13 +486,15 @@ class PaymentElementController {
   void _relayWidgetIntent(PaymentIntent intent) =>
       _orders.relayWidgetIntent(intent);
 
+  void _retryDeferredIntent() => _orders.retryDeferred();
+
   void _updateFromWidget(
     PaymentConfig configuration,
     PaymentIntent intent,
     String chvId,
   ) {
     _orders.forgetAndSupersede();
-    _orders.invoke('updateAll', {
+    _orders.invokeQuietly('updateAll', {
       'configuration': toNativeConfiguration(configuration, chvId),
       'orderPayload': intent.orderPayload,
       'orderChecksum': intent.orderChecksum,

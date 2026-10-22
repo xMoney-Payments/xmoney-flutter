@@ -116,6 +116,10 @@ class _UpdateOrderSampleState extends State<UpdateOrderSample> {
       setState(() => _intent = next);
     } catch (e) {
       if (!mounted || request != _orderRequest || isSupersededUpdate(e)) return;
+      if (isNotInitialized(e)) {
+        await _loadOrder(request, amount, initial: initial);
+        return;
+      }
       setState(() => _error = e.toString());
     } finally {
       if (initial && mounted && request == _orderRequest) {

@@ -328,13 +328,24 @@ internal class PaymentElementPlatformView(
         }
         hostActivity.lifecycleScope.launch {
             try {
-                controller.updateOrder {
+                val bound = controller.updateOrder {
                     emitAvailabilityIfChanged(controller)
                     deferred.await()
                 }
+                val nextPayload = bound.orderPayload
+                val nextChecksum = bound.orderChecksum
+                val next = BridgeConfigParser.parse(
+                    configuration.orEmpty(),
+                    nextPayload,
+                    nextChecksum,
+                )
+                orderPayload = nextPayload
+                orderChecksum = nextChecksum
+                prepared = next
                 emitAvailabilityIfChanged(controller)
                 result.success(null)
             } catch (_: OrderCreationRejected) {
+                if (!didSendReady) rebindMountOrder(controller, hostActivity)
                 result.error("ORDER_CREATION_FAILED", "Order creation failed", null)
             } catch (_: CancellationException) {
                 result.error(
@@ -350,6 +361,25 @@ internal class PaymentElementPlatformView(
                 result.error("PRESENT_ERROR", "Failed to present", null)
             } finally {
                 orders.close(requestId)
+            }
+        }
+    }
+
+    /// The first bind was cancelled before Ready. Bind the mount order again so
+    /// the form can draw. A failed first bind is reported by the controller.
+    private fun rebindMountOrder(
+        controller: EmbeddedPaymentController,
+        hostActivity: FragmentActivity,
+    ) {
+        hostActivity.lifecycleScope.launch {
+            try {
+                controller.updateOrder(
+                    BridgeConfigParser.parseIntent(orderPayload, orderChecksum),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // The native controller reports a failed first bind.
             }
         }
     }

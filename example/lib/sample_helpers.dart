@@ -7,8 +7,12 @@ const sampleAmountMinor = 1999;
 
 /// A newer `updateOrder` replaced this one. The newer call owns the result.
 bool isSupersededUpdate(Object error) {
-  return error is XMoneyPaymentError &&
-      error.code == 'SUPERSEDED_UPDATE_ORDER';
+  return error is XMoneyPaymentError && error.code == 'SUPERSEDED_UPDATE_ORDER';
+}
+
+/// The wallet or element view is not mounted yet, so the update had nothing to lock.
+bool isNotInitialized(Object error) {
+  return error is XMoneyPaymentError && error.code == 'NOT_INITIALIZED';
 }
 
 UserInterfaceStyle exampleForcedStyle(bool dark) {
@@ -16,7 +20,9 @@ UserInterfaceStyle exampleForcedStyle(bool dark) {
 }
 
 WalletAppearance exampleWalletAppearance(bool dark) {
-  return WalletAppearance(color: dark ? WalletButtonColor.white : WalletButtonColor.black);
+  return WalletAppearance(
+    color: dark ? WalletButtonColor.white : WalletButtonColor.black,
+  );
 }
 
 AppearanceColors _appearanceColors({
@@ -96,9 +102,7 @@ PaymentConfig defaultPaymentConfig(
       applePay: ApplePayConfig(enabled: applePayEnabled, appearance: wallet),
       googlePay: GooglePayConfig(enabled: googlePayEnabled, appearance: wallet),
     ),
-    card: CardConfig(
-      savedCards: SavedCardsConfig(enabled: savedCardsEnabled),
-    ),
+    card: CardConfig(savedCards: SavedCardsConfig(enabled: savedCardsEnabled)),
     options: OptionsConfig(
       style: exampleForcedStyle(dark),
       appearance: appearance ?? exampleAppearance(),
@@ -152,9 +156,8 @@ String resultMessage(PaymentResult result) {
       (transaction.id?.isNotEmpty ?? false)
           ? 'Paid · ${transaction.id}'
           : 'Payment complete',
-    PaymentResultFailed(:final error) => error.message.isNotEmpty
-        ? error.message
-        : error.code,
+    PaymentResultFailed(:final error) =>
+      error.message.isNotEmpty ? error.message : error.code,
     PaymentResultCanceled() => 'Canceled',
   };
 }
