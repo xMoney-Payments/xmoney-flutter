@@ -6,12 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [0.0.3] - 2026-10-20
+## [1.0.0] - 2026-10-22
+
+First stable release.
 
 ### Changed
 
 - Pins native SDKs to CocoaPods `XMoneyPaymentSheet` **1.1.0** and Maven `com.xmoney:*` **1.1.0**.
 - `Ready` fires once per mounted surface, after the form or wallet button has drawn. It is not emitted when the first load fails. The Apple Pay button waits for its mount order to bind as well.
+- Set the widget's `intent` to the order `updateOrderWith` returns. A configuration change rebinds `widget.intent` on both platforms, so an order left only on the controller is replaced by the previous one. Changing wallet appearance or whether the button is enabled does not.
+- Changing the widget's `intent` during a charge does not throw. That order is bound when the charge ends.
 
 ### Added
 
@@ -30,10 +34,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 
 - The example keeps the Payment Element mounted when checkout becomes ready, so the native loader does not start a second time.
+- If `updateOrderWith` throws before the first ready event, the surface binds the order the widget was mounted with and then sends ready.
+- A widget-relayed intent rejected as `PAYMENT_IN_PROGRESS` is bound when the charge ends.
+- `isUpdateCurrent` is per-controller, so a nested `updateOrderWith` on another controller does not steal the sequence.
 - Passing an order the controller already sent no longer binds it again.
 - A superseded `updateOrderWith` no longer reports an unhandled error while your callback is still running.
 - The Apple Pay button binds its mount order, so a failed cart update locks the button instead of charging the previous order.
 - A new intent on a wallet button with no controller now reaches the native button.
+- Android: appearance-only Google Pay updates apply without recreating the native button.
+- iOS: a rejected `updateOrderWith` before Ready rebinds the mount order. Appearance-only Apple Pay updates no longer tear down the button.
 
 ### Migration
 

@@ -4,7 +4,9 @@ All notable changes to the `xmoney_ios` package are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-10-20
+## [1.0.0] - 2026-10-22
+
+First stable release.
 
 ### Changed
 
@@ -19,6 +21,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- A rejected `updateOrderWith` before Ready rebinds the mount order on Payment Element and Apple Pay, then sends ready.
+- Appearance-only Apple Pay updates no longer tear down the button.
 - Passing an order the view already sent no longer binds it again.
 - The Apple Pay button binds its mount order, so a failed cart update locks the button instead of charging the previous order.
 - A new intent on a wallet button with no controller now reaches the native button.

@@ -22,7 +22,7 @@ Native SDKs: Android `com.xmoney:*` **1.1.0**, iOS `XMoneyPaymentSheet` **1.1.0*
 
 ```yaml
 dependencies:
-  xmoney: ^0.0.3
+  xmoney: ^1.0.0
 ```
 
 ```bash

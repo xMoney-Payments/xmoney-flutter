@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.xmoney.flutter"
-version = "0.0.3"
+version = "1.0.0"
 
 android {
     namespace = "com.xmoney.flutter"
