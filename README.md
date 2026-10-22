@@ -20,11 +20,11 @@ Native SDKs: Android `com.xmoney:*` **1.1.0**, iOS `XMoneyPaymentSheet` **1.1.0*
 
 ## Installation
 
-Latest release: **`0.0.3`**
+Latest release: **`1.0.0`**
 
 ```yaml
 dependencies:
-  xmoney: ^0.0.3
+  xmoney: ^1.0.0
 ```
 
 ```bash
@@ -202,7 +202,9 @@ await controller.updateOrder(nextIntent);
 
 Keep the surface mounted; do not swap the form for a loader. Gate a merchant-owned Pay button with `isInteractionEnabled`.
 
-`updateOrder` does not lock Pay while your server creates `nextIntent`. When the shopper changes the cart, pass the server call to `updateOrderWith` instead. Pay locks immediately and stays locked, including during a debounce, until the returned order is bound. If the callback throws, the previous order stays payable and that error is rethrown.
+`updateOrder` does not lock Pay while your server creates `nextIntent`. When the shopper changes the cart, pass the server call to `updateOrderWith` instead. Pay locks immediately and stays locked, including during a debounce, until the returned order is bound. If the callback throws, the previous order stays payable and that error is rethrown. If it throws before the first ready event, the surface binds the order the widget was mounted with and then sends ready.
+
+Set the widget's `intent` to the intent `updateOrderWith` returns. A configuration change rebinds `widget.intent` on both platforms, so an order left only on the controller is replaced by the previous one. Changing the button appearance or whether it is enabled does not.
 
 ```dart
 final next = await controller.updateOrderWith(() async {
@@ -210,10 +212,11 @@ final next = await controller.updateOrderWith(() async {
   if (!controller.isUpdateCurrent) throw StateError('superseded');
   return createOrderOnYourServer(cartTotal);
 });
+setState(() => intent = next);
 ```
 
 - A newer update replaces this one and it throws `XMoneyPaymentError` `SUPERSEDED_UPDATE_ORDER`. Ignore it; the newer call owns the result. Check `isUpdateCurrent` after waiting so the replaced callback does not call your server, and keep the endpoint idempotent.
-- During a charge it throws `PAYMENT_IN_PROGRESS`. Show it; the amount did not change.
+- During a charge it throws `PAYMENT_IN_PROGRESS`. Show it; the amount did not change. Changing the widget's `intent` during a charge does not throw. That order is bound when the charge ends.
 - If a later bind fails, `PaymentElementUpdateFailedEvent` is emitted and Pay stays locked on the previous order until an update succeeds.
 
 Copy-paste sample: [`update_order_sample.dart`](example/lib/advanced/update_order_sample.dart)

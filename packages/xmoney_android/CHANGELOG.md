@@ -4,7 +4,9 @@ All notable changes to the `xmoney_android` package are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.3] - 2026-10-20
+## [1.0.0] - 2026-10-22
+
+First stable release.
 
 ### Changed
 
@@ -18,6 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Appearance-only Google Pay updates apply without recreating the native button.
+- A rejected `updateOrder` before Ready rebinds the mount order on Payment Element and Google Pay.
+- The Google Pay button ignores Flutter's parent touches while it is disabled.
 - Passing an order the view already sent no longer binds it again.
 - The Google Pay button binds its mount order, so a failed cart update locks the button instead of charging the previous order.
 - A new intent on a wallet button with no controller now reaches the native button.

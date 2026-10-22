@@ -162,6 +162,12 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
       setState(() => _intent = next);
     } catch (e) {
       if (!mounted || request != _orderRequest || isSupersededUpdate(e)) return;
+      // The button or element is not mounted yet. Create the order and let the
+      // widget bind it once its view exists.
+      if (isNotInitialized(e)) {
+        await _loadOrder(request, amount, initial: initial);
+        return;
+      }
       setState(() => _error = e.toString());
     } finally {
       if (initial && mounted && request == _orderRequest) {
@@ -174,8 +180,11 @@ class _PlaygroundScreenState extends State<PlaygroundScreen> {
     setState(() {
       _ready = false;
       _lastResult = null;
+      _error = null;
     });
-    _scheduleOrder(initial: _intent == null);
+    // The remounted surface binds the current order. A wallet button that stays
+    // mounted sends the new configuration itself.
+    if (_intent == null) _scheduleOrder(initial: true);
   }
 
   /// A failed mount bind sends a result and no Ready, so the loader ends here.

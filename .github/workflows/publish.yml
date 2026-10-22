@@ -17,7 +17,7 @@
 #
 # Pre-release checklist:
 #   1. Bump version in all four package pubspecs together, and the hosted
-#      dependency constraints. ^0.0.1 only allows 0.0.1.
+#      dependency constraints. ^0.0.1 only allows 0.0.1; ^1.0.0 allows 1.x.
 #   2. Update each package CHANGELOG.md and the repo CHANGELOG.md.
 #   3. Update the "Latest release" line in README.md.
 #   4. Confirm native SDK pins stay in android/build.gradle and xmoney_ios.podspec.
@@ -35,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 0.0.3'
+        description: 'Version to release, e.g. 1.0.0'
         required: true
         type: string
       dry_run:

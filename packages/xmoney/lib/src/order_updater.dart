@@ -5,10 +5,6 @@ import 'package:xmoney_platform_interface/xmoney_platform_interface.dart';
 
 import 'errors.dart';
 
-/// Zone value for the [OrderUpdater.updateOrderWith] call that is running
-/// [OrderUpdater.isUpdateCurrent].
-final Object updateZoneKey = Object();
-
 /// Shared order rebinding for the payment element and the wallet buttons.
 ///
 /// The native SDKs lock Pay before the server creates the next order. Dart
@@ -25,6 +21,18 @@ class OrderUpdater {
   final Set<int> _lostLock = {};
   static var _nextRequest = 0;
 
+  /// An intent rejected because a charge was in progress, and the sequence
+  /// number of that attempt. Bound again when the charge ends, unless a newer
+  /// update has started.
+  PaymentIntent? _deferredIntent;
+  int? _deferredSeq;
+
+  /// Zone value for this controller's [updateOrderWith] callback.
+  ///
+  /// One key per controller, so a nested call on another controller does not
+  /// overwrite this sequence number.
+  final Object _zoneKey = Object();
+
   /// The checksum of the last order handed to the native SDK.
   String? get sentChecksumForTest => _sentChecksum;
 
@@ -37,6 +45,8 @@ class OrderUpdater {
     _sentChecksum = null;
     _pendingPayload = null;
     _pendingChecksum = null;
+    _deferredIntent = null;
+    _deferredSeq = null;
     _lostLock.clear();
   }
 
@@ -48,12 +58,46 @@ class OrderUpdater {
 
   /// Skips the rebind a widget would send for an intent already handed to the
   /// native SDK, including one still in flight.
+  ///
+  /// A failed rebind is discarded. The native surface reports it through the
+  /// update-failed event, and a widget rebuild has no caller to await this.
+  ///
+  /// `PAYMENT_IN_PROGRESS` is kept and bound when the charge ends. The native
+  /// SDKs do not emit update-failed for that code, and they do not keep the
+  /// rejected intent.
   void relayWidgetIntent(PaymentIntent intent) {
     if (_sameIntent(_sentPayload, _sentChecksum, intent) ||
         _sameIntent(_pendingPayload, _pendingChecksum, intent)) {
       return;
     }
-    updateOrder(intent);
+    final update = updateOrder(intent);
+    // [updateOrder] bumps the sequence before its first await.
+    final seq = _updateSeq;
+    unawaited(
+      update.then(
+        (_) {},
+        onError: (Object error) {
+          if (error is XMoneyPaymentError &&
+              error.code == 'PAYMENT_IN_PROGRESS' &&
+              seq == _updateSeq) {
+            _deferredIntent = intent;
+            _deferredSeq = seq;
+          }
+        },
+      ),
+    );
+  }
+
+  /// Binds an intent that was rejected because a charge was in progress.
+  ///
+  /// No-op once a newer update has started.
+  void retryDeferred() {
+    final intent = _deferredIntent;
+    final seq = _deferredSeq;
+    _deferredIntent = null;
+    _deferredSeq = null;
+    if (intent == null || seq != _updateSeq) return;
+    relayWidgetIntent(intent);
   }
 
   /// Drops remembered intents and supersedes in-flight updates. Used before a
@@ -64,6 +108,8 @@ class OrderUpdater {
     _sentChecksum = null;
     _pendingPayload = null;
     _pendingChecksum = null;
+    _deferredIntent = null;
+    _deferredSeq = null;
   }
 
   /// Rebinds [intent]. Pay stays disabled until the bind finishes.
@@ -94,7 +140,7 @@ class OrderUpdater {
   /// Check it after a debounce so a superseded callback does not create an
   /// order. True outside an [updateOrderWith] callback.
   bool get isUpdateCurrent {
-    final seq = Zone.current[updateZoneKey] as int?;
+    final seq = Zone.current[_zoneKey] as int?;
     return seq == null || (seq == _updateSeq && !_lostLock.contains(seq));
   }
 
@@ -126,7 +172,7 @@ class OrderUpdater {
     Object? createError;
     StackTrace? createStack;
     try {
-      intent = await runZoned(createOrder, zoneValues: {updateZoneKey: seq});
+      intent = await runZoned(createOrder, zoneValues: {_zoneKey: seq});
     } on Object catch (error, stack) {
       createError = error;
       createStack = stack;
@@ -175,6 +221,14 @@ class OrderUpdater {
   /// Sends [method] to the native surface.
   Future<void> invoke(String method, [Map<String, dynamic>? args]) =>
       _invoke(method, args);
+
+  /// Sends [method] and discards a failure.
+  ///
+  /// Widget rebuilds use this. The merchant already hears the failure through
+  /// the update-failed event, and there is no caller to await the future.
+  void invokeQuietly(String method, [Map<String, dynamic>? args]) {
+    unawaited(invoke(method, args).then((_) {}, onError: (Object _) {}));
+  }
 
   void _remember(PaymentIntent intent) {
     _sentPayload = intent.orderPayload;

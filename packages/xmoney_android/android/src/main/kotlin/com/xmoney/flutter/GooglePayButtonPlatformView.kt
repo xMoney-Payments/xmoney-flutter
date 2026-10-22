@@ -1,7 +1,9 @@
 package com.xmoney.flutter
 
 import android.content.Context
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,6 +24,7 @@ import com.xmoney.googlepay.GooglePayController
 import com.xmoney.googlepay.GooglePayEvent
 import com.xmoney.googlepay.rememberGooglePay
 import com.xmoney.payments.config.PaymentConfig
+import com.xmoney.payments.config.WalletAppearance
 import com.xmoney.payments.model.PaymentError
 import com.xmoney.payments.model.PaymentIntent
 import io.flutter.plugin.common.BinaryMessenger
@@ -38,7 +41,8 @@ internal class GooglePayButtonPlatformView(
     private val activityProvider: () -> FragmentActivity?,
     params: Map<String, Any?>,
 ) : PlatformView, MethodChannel.MethodCallHandler {
-    private val frame = FrameLayout(context)
+    private val frame = TouchGuardFrame(context)
+    private val frameFocusability = frame.descendantFocusability
     private val composeView = ComposeView(context)
     private val buttonChannel =
         MethodChannel(messenger, "xmoney/google_pay_button/$viewId")
@@ -53,6 +57,7 @@ internal class GooglePayButtonPlatformView(
     private val orders = PendingOrders()
     private var disabledState by mutableStateOf(false)
     private var lastAvailability: String? = null
+    private var didSendReady = false
     private var boundActivity: FragmentActivity? = null
     private val activityListener: () -> Unit = {
         val next = activityProvider()
@@ -72,6 +77,7 @@ internal class GooglePayButtonPlatformView(
     private fun bindContent() {
         val hostActivity = activityProvider() ?: return
         boundActivity = hostActivity
+        didSendReady = false
         val (config, intent) = try {
             BridgeConfigParser.parse(configurationMap, orderPayload, orderChecksum)
         } catch (error: Exception) {
@@ -79,7 +85,7 @@ internal class GooglePayButtonPlatformView(
             return
         }
         prepared = config to intent
-        disabledState = !isEnabled
+        applyDisabled()
         composeView.setContent {
             val current = prepared ?: return@setContent
             androidx.compose.runtime.CompositionLocalProvider(
@@ -92,6 +98,9 @@ internal class GooglePayButtonPlatformView(
                 }
                 LaunchedEffect(controller) {
                     controllerRef = controller
+                    appearanceMap?.let {
+                        controller.updateAppearance(BridgeConfigParser.parseWalletAppearance(it))
+                    }
                 }
                 GooglePayButton(
                     controller = controller,
@@ -100,6 +109,7 @@ internal class GooglePayButtonPlatformView(
                     onEvent = { event ->
                         when (event) {
                             GooglePayEvent.Ready -> {
+                                didSendReady = true
                                 emitAvailability()
                                 emitEvent(mapOf("type" to "onReady"))
                             }
@@ -127,8 +137,28 @@ internal class GooglePayButtonPlatformView(
                 )
             }
         }
-        composeView.alpha = if (disabledState) 0.4f else 1f
     }
+
+    private fun applyDisabled() {
+        disabledState = !isEnabled
+        frame.swallowTouches = disabledState
+        composeView.alpha = if (disabledState) 0.4f else 1f
+        if (disabledState) {
+            frame.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            if (composeView.hasFocus()) composeView.clearFocus()
+            composeView.importantForAccessibility =
+                View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        } else {
+            frame.descendantFocusability = frameFocusability
+            composeView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        }
+    }
+
+    /// Widget appearance wins. Otherwise keep the style from the configuration,
+    /// which [rememberGooglePay] already applied at mount.
+    private fun walletAppearance(): WalletAppearance? =
+        appearanceMap?.let { BridgeConfigParser.parseWalletAppearance(it) }
+            ?: prepared?.first?.paymentMethods?.googlePay?.appearance
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -166,13 +196,22 @@ internal class GooglePayButtonPlatformView(
             "updateProps" -> {
                 @Suppress("UNCHECKED_CAST")
                 val args = call.arguments as? Map<String, Any?>
-                configurationMap = args?.get("configuration") as? Map<String, Any?> ?: configurationMap
+                @Suppress("UNCHECKED_CAST")
+                val nextConfiguration =
+                    args?.get("configuration") as? Map<String, Any?> ?: configurationMap
+                val configurationChanged = nextConfiguration != configurationMap
+                configurationMap = nextConfiguration
                 orderPayload = args?.get("orderPayload") as? String ?: orderPayload
                 orderChecksum = args?.get("orderChecksum") as? String ?: orderChecksum
                 appearanceMap = args?.get("appearance") as? Map<String, Any?> ?: appearanceMap
                 isEnabled = args?.get("isEnabled") as? Boolean ?: isEnabled
-                disabledState = !isEnabled
-                bindContent()
+                if (configurationChanged) {
+                    bindContent()
+                } else {
+                    applyDisabled()
+                    walletAppearance()?.let { controllerRef?.updateAppearance(it) }
+                    emitAvailability()
+                }
                 result.success(null)
             }
             else -> result.notImplemented()
@@ -199,14 +238,20 @@ internal class GooglePayButtonPlatformView(
                     emitAvailability()
                     deferred.await()
                 }
-                prepared = BridgeConfigParser.parse(
+                val nextPayload = bound.orderPayload
+                val nextChecksum = bound.orderChecksum
+                val next = BridgeConfigParser.parse(
                     configurationMap,
-                    bound.orderPayload,
-                    bound.orderChecksum,
+                    nextPayload,
+                    nextChecksum,
                 )
+                orderPayload = nextPayload
+                orderChecksum = nextChecksum
+                prepared = next
                 emitAvailability()
                 result.success(null)
             } catch (_: OrderCreationRejected) {
+                if (!didSendReady) rebindMountOrder(controller, hostActivity)
                 result.error("ORDER_CREATION_FAILED", "Order creation failed", null)
             } catch (_: CancellationException) {
                 result.error(
@@ -222,6 +267,25 @@ internal class GooglePayButtonPlatformView(
                 result.error("PRESENT_ERROR", "Failed to present", null)
             } finally {
                 orders.close(requestId)
+            }
+        }
+    }
+
+    /// The first bind was cancelled before Ready. Bind the mount order again so
+    /// the button can draw. A failed first bind is reported by the controller.
+    private fun rebindMountOrder(
+        controller: GooglePayController,
+        hostActivity: FragmentActivity,
+    ) {
+        hostActivity.lifecycleScope.launch {
+            try {
+                controller.updateOrder(
+                    BridgeConfigParser.parseIntent(orderPayload, orderChecksum),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // The native controller reports a failed first bind.
             }
         }
     }
@@ -285,5 +349,18 @@ internal class GooglePayButtonPlatformView(
         orders.cancelAll()
         HostActivity.removeListener(activityListener)
         buttonChannel.setMethodCallHandler(null)
+    }
+}
+
+/** Swallows touches while the merchant has disabled the button. */
+private class TouchGuardFrame(context: Context) : FrameLayout(context) {
+    var swallowTouches = false
+
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        return swallowTouches || super.onInterceptTouchEvent(ev)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        return if (swallowTouches) true else super.onTouchEvent(event)
     }
 }

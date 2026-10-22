@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 0.0.x   | Yes       |
+| 1.0.x   | Yes       |
+| 0.0.x   | No        |
 
 ## Reporting a vulnerability
 
@@ -40,4 +41,4 @@ Card entry runs in native SDK views. PAN + CVV stay out of the Dart method chann
 
 All SDK network calls use HTTPS to hardcoded xMoney hosts only (no cleartext, no merchant-supplied base URLs).
 
-Certificate pinning is **not** implemented in the SDK. For v0.0.x we **accept** the residual risk that a compromised device trust store could enable MITM. Revisit pinning if the threat model or merchant compliance requirements change.
+Certificate pinning is **not** implemented in the SDK. For v1.0.x we **accept** the residual risk that a compromised device trust store could enable MITM. Revisit pinning if the threat model or merchant compliance requirements change.

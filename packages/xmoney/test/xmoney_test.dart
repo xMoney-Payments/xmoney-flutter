@@ -13,6 +13,8 @@ import 'package:xmoney/src/native_events.dart';
 import 'package:xmoney/src/parse_result.dart';
 import 'package:xmoney/src/present_session.dart';
 import 'package:xmoney/src/widgets/payment_element.dart' as payment_element;
+import 'package:xmoney/src/widgets/wallet_pay_button.dart'
+    show WalletPayButtonControllerTestHooks;
 import 'package:xmoney/src/widgets/wallet_pay_button.dart' as wallet_pay;
 
 /// The order-update methods both controllers share.
@@ -24,9 +26,11 @@ abstract interface class _OrderUpdates {
   );
 }
 
-class _ElementOrders extends PaymentElementController implements _OrderUpdates {}
+class _ElementOrders extends PaymentElementController
+    implements _OrderUpdates {}
 
-class _WalletOrders extends WalletPayButtonController implements _OrderUpdates {}
+class _WalletOrders extends WalletPayButtonController
+    implements _OrderUpdates {}
 
 PaymentElementController _elementController(MethodChannel channel) =>
     _controller(channel, wallet: false) as PaymentElementController;
@@ -160,6 +164,11 @@ void main() {
     _orderUpdateTests(wallet: wallet);
   }
   _walletRelayTest();
+  _walletWidgetUpdateTest();
+  _zoneIsolationTest();
+  _quietRelayTest();
+  _intentBeforeViewTest();
+  _deferredIntentTest();
 }
 
 void _orderUpdateTests({required bool wallet}) {
@@ -220,6 +229,9 @@ void _orderUpdateTests({required bool wallet}) {
               controller: controller,
             ),
           ),
+        );
+        payment_element.markPaymentElementPlatformViewCreatedForTest(
+          tester.element(find.byType(PaymentElement)),
         );
         calls.clear();
         await controller.updateOrder(second);
@@ -395,6 +407,9 @@ void _orderUpdateTests({required bool wallet}) {
             ),
           ),
         );
+        payment_element.markPaymentElementPlatformViewCreatedForTest(
+          tester.element(find.byType(PaymentElement)),
+        );
         calls.clear();
         final pending = controller.updateOrder(second);
         await tester.pump();
@@ -415,6 +430,125 @@ void _orderUpdateTests({required bool wallet}) {
 
         gate.complete();
         await pending;
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+}
+
+void _walletWidgetUpdateTest() {
+  const channel = MethodChannel('xmoney/apple_pay_button/test');
+  const intent = PaymentIntent(orderPayload: 'a', orderChecksum: '1');
+  const nextIntent = PaymentIntent(orderPayload: 'b', orderChecksum: '2');
+
+  group('wallet button widget updates', () {
+    late List<String> calls;
+
+    setUp(() {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      calls = [];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call.method);
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    Future<void> pumpButton(
+      WidgetTester tester, {
+      required PaymentConfig configuration,
+      required PaymentIntent intent,
+      WalletAppearance? appearance,
+      bool isEnabled = true,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ApplePayButton(
+            configuration: configuration,
+            intent: intent,
+            appearance: appearance,
+            isEnabled: isEnabled,
+          ),
+        ),
+      );
+    }
+
+    testWidgets('an equal appearance sends nothing', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        const config = PaymentConfig(publicKey: 'pk_test_example');
+        await pumpButton(
+          tester,
+          configuration: config,
+          intent: intent,
+          appearance: WalletAppearance(),
+        );
+        wallet_pay.markWalletPlatformViewCreatedForTest(
+          tester.element(find.byType(ApplePayButton)),
+        );
+        calls.clear();
+
+        await pumpButton(
+          tester,
+          configuration: config,
+          intent: intent,
+          appearance: WalletAppearance(),
+        );
+        await tester.pump();
+        expect(calls, isEmpty);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('a configuration change sends updateProps only', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        const config = PaymentConfig(publicKey: 'pk_test_example');
+        const next = PaymentConfig(
+          publicKey: 'pk_test_example',
+          options: OptionsConfig(locale: 'fr'),
+        );
+        await pumpButton(tester, configuration: config, intent: intent);
+        wallet_pay.markWalletPlatformViewCreatedForTest(
+          tester.element(find.byType(ApplePayButton)),
+        );
+        calls.clear();
+
+        await pumpButton(tester, configuration: next, intent: intent);
+        await tester.pump();
+        expect(calls, ['updateProps']);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('an intent and enabled change sends both', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        const config = PaymentConfig(publicKey: 'pk_test_example');
+        await pumpButton(tester, configuration: config, intent: intent);
+        wallet_pay.markWalletPlatformViewCreatedForTest(
+          tester.element(find.byType(ApplePayButton)),
+        );
+        calls.clear();
+
+        await pumpButton(
+          tester,
+          configuration: config,
+          intent: nextIntent,
+          isEnabled: false,
+        );
+        await tester.pump();
+        expect(calls, ['updateProps', 'updateOrder']);
       } finally {
         debugDefaultTargetPlatformOverride = null;
       }
@@ -466,5 +600,216 @@ void _walletRelayTest() {
       expect(result, isA<PaymentResultFailed>());
       expect((result as PaymentResultFailed).error.code, 'APPLE_PAY');
     });
+  });
+}
+
+void _zoneIsolationTest() {
+  test(
+    'nested updateOrderWith callbacks keep their own isUpdateCurrent',
+    () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      const elementChannel = MethodChannel('xmoney/order_update/element-zone');
+      const walletChannel = MethodChannel('xmoney/order_update/wallet-zone');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      Future<Object?> handler(MethodCall call) async => null;
+      messenger.setMockMethodCallHandler(elementChannel, handler);
+      messenger.setMockMethodCallHandler(walletChannel, handler);
+      try {
+        final element = _controller(elementChannel, wallet: false);
+        final wallet = _controller(walletChannel, wallet: true);
+        await element.updateOrder(
+          const PaymentIntent(orderPayload: 'a', orderChecksum: '1'),
+        );
+
+        var elementCurrent = false;
+        var walletCurrent = false;
+        await element.updateOrderWith(() async {
+          await wallet.updateOrderWith(() async {
+            elementCurrent = element.isUpdateCurrent;
+            walletCurrent = wallet.isUpdateCurrent;
+            return const PaymentIntent(orderPayload: 'w', orderChecksum: '2');
+          });
+          return const PaymentIntent(orderPayload: 'e', orderChecksum: '3');
+        });
+        expect(elementCurrent, isTrue);
+        expect(walletCurrent, isTrue);
+      } finally {
+        messenger.setMockMethodCallHandler(elementChannel, null);
+        messenger.setMockMethodCallHandler(walletChannel, null);
+      }
+    },
+  );
+}
+
+void _quietRelayTest() {
+  test('a failed widget relay is not an uncaught error', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    const channel = MethodChannel('xmoney/apple_pay_button/quiet');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final uncaught = <Object>[];
+    await runZonedGuarded(() async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'LOAD_ERROR', message: 'Failed to load');
+      });
+      final controller =
+          _controller(channel, wallet: true) as WalletPayButtonController;
+      controller.relayWidgetIntentForTest(
+        const PaymentIntent(orderPayload: 'a', orderChecksum: '1'),
+      );
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+    }, (error, _) => uncaught.add(error));
+    messenger.setMockMethodCallHandler(channel, null);
+    expect(uncaught, isEmpty);
+  });
+}
+
+void _intentBeforeViewTest() {
+  testWidgets(
+    'an intent change before the platform view exists does not throw',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final uncaught = <Object>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = (details) => uncaught.add(details.exception);
+      try {
+        const config = PaymentConfig(publicKey: 'pk_test_example');
+        const first = PaymentIntent(orderPayload: 'a', orderChecksum: '1');
+        const second = PaymentIntent(orderPayload: 'b', orderChecksum: '2');
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: PaymentElement(configuration: config, intent: first),
+          ),
+        );
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: PaymentElement(configuration: config, intent: second),
+          ),
+        );
+        await tester.pump();
+        expect(uncaught, isEmpty);
+      } finally {
+        FlutterError.onError = previous;
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
+}
+
+void _deferredIntentTest() {
+  const channel = MethodChannel('xmoney/apple_pay_button/deferred');
+  const duringCharge = PaymentIntent(orderPayload: 'next', orderChecksum: '2');
+  const fromMerchant = PaymentIntent(
+    orderPayload: 'merchant',
+    orderChecksum: '9',
+  );
+
+  WalletPayButtonController button() =>
+      _controller(channel, wallet: true) as WalletPayButtonController;
+
+  test('a relay during a charge is sent again when processing ends', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    var charging = true;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (charging && call.method == 'updateOrder') {
+        throw PlatformException(
+          code: 'PAYMENT_IN_PROGRESS',
+          message: 'Payment in progress',
+        );
+      }
+      return null;
+    });
+    try {
+      final controller = button();
+      controller.relayWidgetIntentForTest(duringCharge);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, ['updateOrder']);
+
+      charging = false;
+      calls.clear();
+      controller.retryDeferredForTest();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, ['updateOrder']);
+      expect(controller.sentChecksumForTest, '2');
+    } finally {
+      messenger.setMockMethodCallHandler(channel, null);
+    }
+  });
+
+  test('a newer updateOrder drops the deferred retry', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    var charging = true;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      if (charging && call.method == 'updateOrder') {
+        throw PlatformException(
+          code: 'PAYMENT_IN_PROGRESS',
+          message: 'Payment in progress',
+        );
+      }
+      return null;
+    });
+    try {
+      final controller = button();
+      controller.relayWidgetIntentForTest(duringCharge);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      charging = false;
+      await controller.updateOrder(fromMerchant);
+
+      calls.clear();
+      controller.retryDeferredForTest();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, isEmpty);
+      expect(controller.sentChecksumForTest, '9');
+    } finally {
+      messenger.setMockMethodCallHandler(channel, null);
+    }
+  });
+
+  test('detach clears a deferred intent', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      calls.add(call.method);
+      throw PlatformException(
+        code: 'PAYMENT_IN_PROGRESS',
+        message: 'Payment in progress',
+      );
+    });
+    try {
+      final controller = button();
+      controller.relayWidgetIntentForTest(duringCharge);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      controller.detachForTest();
+      wallet_pay.attachWalletPayButtonControllerForTest(controller, channel);
+
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return null;
+      });
+      calls.clear();
+      controller.retryDeferredForTest();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(calls, isEmpty);
+    } finally {
+      messenger.setMockMethodCallHandler(channel, null);
+    }
   });
 }
